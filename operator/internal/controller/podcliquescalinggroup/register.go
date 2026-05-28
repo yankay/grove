@@ -18,6 +18,7 @@ package podcliquescalinggroup
 
 import (
 	"context"
+	"time"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
@@ -62,7 +63,7 @@ func (r *Reconciler) RegisterWithManager(mgr manager.Manager) error {
 		).
 		Watches(&grovecorev1alpha1.PodClique{},
 			handler.EnqueueRequestsFromMapFunc(mapPCLQToPCSG()),
-			builder.WithPredicates(podCliquePredicate()),
+			builder.WithPredicates(r.podCliquePredicate()),
 		).
 		Complete(r)
 }
@@ -176,12 +177,18 @@ func mapPCLQToPCSG() handler.MapFunc {
 	}
 }
 
-// podCliquePredicate filters PodClique events to only process those managed by PodCliqueScalingGroup
-func podCliquePredicate() predicate.Predicate {
+// podCliquePredicate keeps events for PCSG-owned PodCliques and drops cascade-deletes (issue #622).
+func (r *Reconciler) podCliquePredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(_ event.CreateEvent) bool { return false },
 		DeleteFunc: func(deleteEvent event.DeleteEvent) bool {
-			return ctrlutils.IsManagedPodClique(deleteEvent.Object, constants.KindPodCliqueScalingGroup)
+			if !ctrlutils.IsManagedPodClique(deleteEvent.Object, constants.KindPodCliqueScalingGroup) {
+				return false
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return !ctrlutils.IsOwnerBeingDeleted(ctx, r.client, deleteEvent.Object,
+				constants.KindPodCliqueScalingGroup, &grovecorev1alpha1.PodCliqueScalingGroup{})
 		},
 		UpdateFunc: func(updateEvent event.UpdateEvent) bool {
 			return ctrlutils.IsManagedPodClique(updateEvent.ObjectOld, constants.KindPodCliqueScalingGroup)

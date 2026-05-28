@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/ai-dynamo/grove/operator/api/common"
+	"github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/expect"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
@@ -29,8 +30,10 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
@@ -50,7 +53,11 @@ func TestPodPredicate_Delete(t *testing.T) {
 	pclqKey, err := expect.ControlleeKeyFunc(&grovecorev1alpha1.PodClique{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: pclqName}})
 	require.NoError(t, err)
 
-	t.Run("managed pod with PodClique owner: ObserveDeletions removes UID from create expectations so pod can be recreated", func(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, grovecorev1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	t.Run("owner alive: ObserveDeletions removes UID from create expectations", func(t *testing.T) {
 		store := expect.NewExpectationsStore()
 		podUID := types.UID("pod-deleted-manually")
 		require.NoError(t, store.ExpectCreations(logr.Discard(), pclqKey, podUID))
@@ -58,13 +65,21 @@ func TestPodPredicate_Delete(t *testing.T) {
 		createExpectations := store.GetCreateExpectations(pclqKey)
 		require.Contains(t, createExpectations, podUID, "setup: create expectation should contain pod UID")
 
-		r := &Reconciler{expectationsStore: store}
-		pred := r.podPredicate()
 		pod := testutils.NewPodBuilder(podName, ns).
 			WithOwner(pclqName).
 			WithLabels(map[string]string{common.LabelManagedByKey: common.LabelManagedByValue}).
 			Build()
 		pod.UID = podUID
+
+		// Owner PodClique exists and is alive. UID must match the pod's ownerRef so the
+		// helper's same-name-recreate check doesn't fire.
+		owner := &grovecorev1alpha1.PodClique{ObjectMeta: metav1.ObjectMeta{
+			Name: pclqName, Namespace: ns, UID: pod.OwnerReferences[0].UID,
+		}}
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(owner).Build()
+
+		r := &Reconciler{client: cl, expectationsStore: store}
+		pred := r.podPredicate()
 
 		funcs, ok := pred.(predicate.Funcs)
 		require.True(t, ok, "predicate must be predicate.Funcs")
@@ -75,6 +90,99 @@ func TestPodPredicate_Delete(t *testing.T) {
 			"ObserveDeletions should remove the deleted pod UID from uidsToAdd so next reconcile can recreate the pod")
 		assert.True(t, result, "predicate should allow the event so the handler enqueues reconcile")
 	})
+
+	t.Run("owner being deleted: drop event (cascade)", func(t *testing.T) {
+		now := metav1.Now()
+		owner := &grovecorev1alpha1.PodClique{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              pclqName,
+				Namespace:         ns,
+				DeletionTimestamp: &now,
+				Finalizers:        []string{"keep-around-for-test"},
+			},
+		}
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(owner).Build()
+
+		store := expect.NewExpectationsStore()
+		podUID := types.UID("pod-cascade")
+		require.NoError(t, store.ExpectCreations(logr.Discard(), pclqKey, podUID))
+
+		r := &Reconciler{client: cl, expectationsStore: store}
+		pred := r.podPredicate()
+		pod := testutils.NewPodBuilder(podName, ns).
+			WithOwner(pclqName).
+			WithLabels(map[string]string{common.LabelManagedByKey: common.LabelManagedByValue}).
+			Build()
+		pod.UID = podUID
+
+		funcs, ok := pred.(predicate.Funcs)
+		require.True(t, ok)
+		assert.False(t, funcs.DeleteFunc(event.DeleteEvent{Object: pod}),
+			"cascade-delete event should be filtered out at the predicate")
+		// Expectation should NOT have been observed (we never reach that branch).
+		assert.Contains(t, store.GetCreateExpectations(pclqKey), podUID,
+			"filtered cascade-delete must not consume expectations")
+	})
+}
+
+// TestManagedPodCliquePredicate_Delete_CascadeFilter verifies the PodClique watch's Delete
+// predicate drops events when the owning PCSG is being deleted (issue #622). Helper-level
+// branches (NotFound owner, missing owner ref, etc.) are covered in TestIsOwnerBeingDeleted.
+func TestManagedPodCliquePredicate_Delete_CascadeFilter(t *testing.T) {
+	const ns, pcsgName = "default", "pcsg-1"
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, grovecorev1alpha1.AddToScheme(scheme))
+
+	pclq := &grovecorev1alpha1.PodClique{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pclq-1",
+			Namespace: ns,
+			Labels:    map[string]string{common.LabelManagedByKey: common.LabelManagedByValue},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: grovecorev1alpha1.SchemeGroupVersion.String(),
+				Kind:       constants.KindPodCliqueScalingGroup,
+				Name:       pcsgName,
+				UID:        types.UID("owner-uid"),
+				Controller: ptr.To(true),
+			}},
+		},
+	}
+
+	now := metav1.Now()
+	tests := []struct {
+		name string
+		pcsg *grovecorev1alpha1.PodCliqueScalingGroup
+		want bool
+	}{
+		{
+			name: "owning PCSG alive: keep event",
+			pcsg: &grovecorev1alpha1.PodCliqueScalingGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: pcsgName, Namespace: ns, UID: types.UID("owner-uid")},
+			},
+			want: true,
+		},
+		{
+			name: "owning PCSG being deleted: drop event",
+			pcsg: &grovecorev1alpha1.PodCliqueScalingGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: pcsgName, Namespace: ns,
+					UID:               types.UID("owner-uid"),
+					DeletionTimestamp: &now,
+					Finalizers:        []string{"keep-around"},
+				},
+			},
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.pcsg).Build()
+			r := &Reconciler{client: cl}
+			funcs := r.managedPodCliquePredicate().(predicate.Funcs)
+			assert.Equal(t, tc.want, funcs.DeleteFunc(event.DeleteEvent{Object: pclq}))
+		})
+	}
 }
 
 // TestPodCliqueSetPredicateCurrentlyUpdatingReplicaChanges verifies that the PodCliqueSet

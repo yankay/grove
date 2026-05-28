@@ -19,6 +19,7 @@ package podclique
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
@@ -60,7 +61,7 @@ func (r *Reconciler) RegisterWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(
 				predicate.And(
 					predicate.GenerationChangedPredicate{},
-					managedPodCliquePredicate(),
+					r.managedPodCliquePredicate(),
 				),
 			),
 		).
@@ -83,15 +84,21 @@ func (r *Reconciler) RegisterWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// managedPodCliquePredicate filters PodClique events to only process managed PodCliques owned by expected resources
-func managedPodCliquePredicate() predicate.Predicate {
+// managedPodCliquePredicate keeps events for managed PodCliques and drops cascade-deletes (issue #622).
+func (r *Reconciler) managedPodCliquePredicate() predicate.Predicate {
 	expectedOwnerKinds := []string{constants.KindPodCliqueScalingGroup, constants.KindPodCliqueSet}
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
 			return grovectrlutils.IsManagedPodClique(e.Object, expectedOwnerKinds...)
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
-			return grovectrlutils.IsManagedPodClique(e.Object, expectedOwnerKinds...)
+			if !grovectrlutils.IsManagedPodClique(e.Object, expectedOwnerKinds...) {
+				return false
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return !grovectrlutils.IsOwnerBeingDeleted(ctx, r.client, e.Object, constants.KindPodCliqueScalingGroup, &grovecorev1alpha1.PodCliqueScalingGroup{}) &&
+				!grovectrlutils.IsOwnerBeingDeleted(ctx, r.client, e.Object, constants.KindPodCliqueSet, &grovecorev1alpha1.PodCliqueSet{})
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			return grovectrlutils.IsManagedPodClique(e.ObjectOld, expectedOwnerKinds...)
@@ -100,14 +107,20 @@ func managedPodCliquePredicate() predicate.Predicate {
 	}
 }
 
-// podPredicate returns a predicate that filters out pods that are not managed by Grove.
-// On Delete for a managed pod it calls ObserveDeletions so the controller can recreate the pod (issue #457).
+// podPredicate filters Pod events: drops cascade-deletes (issue #622); on real delete records
+// the deletion in expectations so the controller can recreate the pod (issue #457).
 func (r *Reconciler) podPredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(_ event.CreateEvent) bool { return false },
 		DeleteFunc: func(deleteEvent event.DeleteEvent) bool {
 			deletedPod, ok := deleteEvent.Object.(*corev1.Pod)
 			if !ok || !isManagedPod(deletedPod) {
+				return false
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if grovectrlutils.IsOwnerBeingDeleted(ctx, r.client, deletedPod,
+				constants.KindPodClique, &grovecorev1alpha1.PodClique{}) {
 				return false
 			}
 			r.recordPodDeletionInExpectations(deletedPod)

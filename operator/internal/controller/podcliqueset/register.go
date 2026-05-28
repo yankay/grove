@@ -19,6 +19,7 @@ package podcliqueset
 import (
 	"context"
 	"reflect"
+	"time"
 
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
@@ -58,7 +59,7 @@ func (r *Reconciler) RegisterWithManager(mgr manager.Manager) error {
 		Watches(
 			&grovecorev1alpha1.PodClique{},
 			handler.EnqueueRequestsFromMapFunc(mapPodCliqueToPodCliqueSet()),
-			builder.WithPredicates(podCliquePredicate()),
+			builder.WithPredicates(r.podCliquePredicate()),
 		).
 		Watches(
 			&grovecorev1alpha1.PodCliqueScalingGroup{},
@@ -137,12 +138,18 @@ func mapClusterTopologyToPodCliqueSets(cl client.Client) handler.MapFunc {
 	}
 }
 
-// podCliquePredicate returns a predicate that filters PodClique events based on ownership and changes.
-func podCliquePredicate() predicate.Predicate {
+// podCliquePredicate keeps events for PCS-owned PodCliques and drops cascade-deletes (issue #622).
+func (r *Reconciler) podCliquePredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(_ event.CreateEvent) bool { return false },
 		DeleteFunc: func(deleteEvent event.DeleteEvent) bool {
-			return grovectrlutils.IsManagedPodClique(deleteEvent.Object, constants.KindPodCliqueSet)
+			if !grovectrlutils.IsManagedPodClique(deleteEvent.Object, constants.KindPodCliqueSet) {
+				return false
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return !grovectrlutils.IsOwnerBeingDeleted(ctx, r.client, deleteEvent.Object,
+				constants.KindPodCliqueSet, &grovecorev1alpha1.PodCliqueSet{})
 		},
 		UpdateFunc: func(updateEvent event.UpdateEvent) bool {
 			return grovectrlutils.IsManagedPodClique(updateEvent.ObjectOld, constants.KindPodCliqueSet, constants.KindPodCliqueScalingGroup) &&
