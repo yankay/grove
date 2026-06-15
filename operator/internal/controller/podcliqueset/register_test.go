@@ -161,7 +161,7 @@ func podCliqueSetWithGenerationAndAnnotations(generation int64, annotations map[
 // PodClique predicate enqueues when status fields feeding rolling-update
 // accounting (current hashes, updated replica count, update progress) change.
 func TestPodCliquePredicateStatusChangesAffectingUpdatedAccounting(t *testing.T) {
-	pred, ok := (&Reconciler{}).podCliquePredicate().(predicate.Funcs)
+	pred, ok := podCliquePredicate().(predicate.Funcs)
 	require.True(t, ok, "predicate must be predicate.Funcs")
 
 	tests := []struct {
