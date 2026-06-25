@@ -133,6 +133,30 @@ func TestComputePCSAvailableReplicas(t *testing.T) {
 			expectedAvailable: 1,
 		},
 		{
+			name: "zero-replica standalone and PCSG members are idle",
+			setupPCS: func() *grovecorev1alpha1.PodCliqueSet {
+				return testutils.NewPodCliqueSetBuilder(testPCSName, testNamespace, pcsUID).
+					WithReplicas(1).
+					WithStandaloneCliqueReplicas("worker", 0).
+					WithScalingGroupConfig("compute", []string{"frontend"}, 0, 1).
+					WithPodCliqueSetGenerationHash(&pcsGenerationHash).
+					Build()
+			},
+			childResources: func() []client.Object {
+				return []client.Object{
+					testutils.NewPodCliqueBuilder(testPCSName, uuid.NewUUID(), "worker", testNamespace, 0).
+						WithReplicas(0).
+						WithOptions(testutils.WithPCLQCurrentPCSGenerationHash(pcsGenerationHash)).
+						Build(),
+					testutils.NewPodCliqueScalingGroupBuilder("test-pcs-0-compute", testNamespace, testPCSName, 0).
+						WithReplicas(0).
+						WithOptions(testutils.WithPCSGCurrentPCSGenerationHash(pcsGenerationHash)).
+						Build(),
+				}
+			},
+			expectedAvailable: 1,
+		},
+		{
 			name: "only standalone cliques - all healthy",
 			setupPCS: func() *grovecorev1alpha1.PodCliqueSet {
 				return testutils.NewPodCliqueSetBuilder(testPCSName, testNamespace, pcsUID).
@@ -279,6 +303,38 @@ func TestComputePCSAvailableReplicas(t *testing.T) {
 			assert.Equal(t, tt.expectedAvailable, stats.availableReplicas, "Available replicas mismatch")
 		})
 	}
+}
+
+func TestComputePCSUpdatedReplicasTreatsZeroReplicaMembersAsUpdatedWhenHashesConverge(t *testing.T) {
+	pcs := testutils.NewPodCliqueSetBuilder(testPCSName, testNamespace, uuid.NewUUID()).
+		WithReplicas(1).
+		WithStandaloneCliqueReplicas("worker", 0).
+		WithScalingGroupConfig("compute", []string{"frontend"}, 0, 1).
+		Build()
+	templateHashes := componentutils.ComputePCLQPodTemplateHashCandidates(pcs.Spec.Template.Cliques[0], pcs.Spec.Template.PriorityClassName)
+	generationHashes := componentutils.ComputePCSGenerationHashCandidates(pcs)
+	pcs.Status.CurrentGenerationHash = ptr.To(generationHashes.Canonical)
+
+	pclq := testutils.NewPodCliqueBuilder(testPCSName, uuid.NewUUID(), "worker", testNamespace, 0).
+		WithReplicas(0).
+		Build()
+	pclq.Labels[apicommon.LabelPodTemplateHash] = templateHashes.Canonical
+	pclq.Status.CurrentPodTemplateHash = ptr.To(templateHashes.Canonical)
+	pclq.Status.CurrentPodCliqueSetGenerationHash = ptr.To(generationHashes.Canonical)
+
+	pcsg := testutils.NewPodCliqueScalingGroupBuilder("test-pcs-0-compute", testNamespace, testPCSName, 0).
+		WithReplicas(0).
+		WithOptions(testutils.WithPCSGCurrentPCSGenerationHash(generationHashes.Canonical)).
+		Build()
+
+	cl := testutils.CreateDefaultFakeClient([]client.Object{pcs, pclq, pcsg})
+	reconciler := &Reconciler{client: cl}
+
+	stats, err := reconciler.computeAvailableAndUpdatedReplicas(context.Background(), logr.Discard(), pcs)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int32(1), stats.availableReplicas)
+	assert.Equal(t, int32(1), stats.updatedReplicas)
 }
 
 // TestComputePCSUpdatedReplicasRequiresStandaloneHashConvergence verifies that

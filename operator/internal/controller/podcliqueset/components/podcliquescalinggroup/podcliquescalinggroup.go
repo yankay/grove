@@ -216,9 +216,9 @@ func (r _resource) buildResource(pcsg *grovecorev1alpha1.PodCliqueScalingGroup, 
 	}
 	// Add finalizer at creation so PCSG controller does not need a separate PATCH on first reconcile.
 	controllerutil.AddFinalizer(pcsg, apiconstants.FinalizerPodCliqueScalingGroup)
-	// Only set replicas when creating the PCSG to allow external scaling (HPA, direct patching)
-	// Post-creation scaling must be done directly on the PCSG resource, not via PCS template
-	if !pcsgExists {
+	// Only set replicas when creating the PCSG to allow external scaling (HPA, direct patching).
+	// replicas: 0 is the intentional idle state for GREP-0677, so allow the template to force scale-to-zero.
+	if pcsgConfig.Replicas != nil && (!pcsgExists || *pcsgConfig.Replicas == 0) {
 		pcsg.Spec.Replicas = *pcsgConfig.Replicas
 	}
 	pcsg.Spec.MinAvailable = pcsgConfig.MinAvailable

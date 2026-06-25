@@ -243,6 +243,14 @@ func computeMinAvailableBreachedCondition(logger logr.Logger, pcsg *grovecorev1a
 			Message: "Update is in progress",
 		}
 	}
+	if pcsg.Spec.Replicas == 0 {
+		return metav1.Condition{
+			Type:    constants.ConditionTypeMinAvailableBreached,
+			Status:  metav1.ConditionFalse,
+			Reason:  constants.ConditionReasonSufficientAvailablePCSGReplicas,
+			Message: "PodCliqueScalingGroup is intentionally idle with replicas 0",
+		}
+	}
 
 	minAvailable := int(*pcsg.Spec.MinAvailable)
 	scheduledReplicas := int(pcsg.Status.ScheduledReplicas)

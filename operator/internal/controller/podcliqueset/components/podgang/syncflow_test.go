@@ -18,6 +18,7 @@ package podgang
 
 import (
 	"errors"
+	"os"
 	"slices"
 	"testing"
 
@@ -41,6 +42,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllogger "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/yaml"
 )
 
 var defaultFakeSchedulerRegistry = &testutils.FakeSchedulerRegistry{
@@ -959,6 +961,38 @@ func TestComputeExpectedPodGangs(t *testing.T) {
 			assert.ElementsMatch(t, test.expectedScaledPodGangFQNs, scaledPodGangNames)
 		})
 	}
+}
+
+func TestComputeExpectedPodGangsFromZeroReplicaSampleYAML(t *testing.T) {
+	pcs := loadZeroReplicaGangMembershipFixture(t)
+	r := &_resource{client: testutils.NewTestClientBuilder().WithObjects(pcs).Build(), schedRegistry: defaultFakeSchedulerRegistry}
+	sc := &syncContext{
+		pcs:            pcs,
+		logger:         ctrllogger.FromContext(t.Context()),
+		existingPCSGs:  []grovecorev1alpha1.PodCliqueScalingGroup{},
+		existingPCLQs:  []grovecorev1alpha1.PodClique{},
+		tasEnabled:     false,
+		topologyLevels: nil,
+	}
+
+	err := r.computeExpectedPodGangs(sc)
+
+	require.NoError(t, err)
+	require.Len(t, sc.expectedPodGangs, 1)
+	assert.Equal(t, "scale-to-zero-deepseek-0", sc.expectedPodGangs[0].fqn)
+	require.Len(t, sc.expectedPodGangs[0].pclqs, 1)
+	assert.Equal(t, "scale-to-zero-deepseek-0-router", sc.expectedPodGangs[0].pclqs[0].fqn)
+}
+
+func loadZeroReplicaGangMembershipFixture(t *testing.T) *grovecorev1alpha1.PodCliqueSet {
+	t.Helper()
+
+	data, err := os.ReadFile("../../../../testdata/zero-replica-gang-membership.yaml")
+	require.NoError(t, err)
+
+	pcs := &grovecorev1alpha1.PodCliqueSet{}
+	require.NoError(t, yaml.Unmarshal(data, pcs))
+	return pcs
 }
 
 type expectedPodGangTopologyConstraints struct {

@@ -318,9 +318,12 @@ func (r _resource) buildResource(logger logr.Logger, pclq *grovecorev1alpha1.Pod
 	// ------------------------------------
 	if pclqExists {
 		// If an HPA is mutating the number of replicas, then it should not be overwritten by the template spec replicas.
+		// replicas: 0 is the intentional idle state for GREP-0677, so allow the template to force scale-to-zero.
 		currentPCLQReplicas := pclq.Spec.Replicas
 		pclq.Spec = *pclqTemplateSpec.Spec.DeepCopy()
-		pclq.Spec.Replicas = currentPCLQReplicas
+		if pclqTemplateSpec.Spec.Replicas != 0 {
+			pclq.Spec.Replicas = currentPCLQReplicas
+		}
 	} else {
 		pclq.Spec = *pclqTemplateSpec.Spec.DeepCopy()
 	}

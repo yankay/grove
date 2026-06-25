@@ -237,6 +237,9 @@ func (r *Reconciler) computePCLQsStatus(pcs *grovecorev1alpha1.PodCliqueSet, exp
 
 	isAvailable = len(nonTerminatedPCLQs) == expectedStandalonePCLQs &&
 		lo.EveryBy(nonTerminatedPCLQs, func(pclq grovecorev1alpha1.PodClique) bool {
+			if pclq.Spec.Replicas == 0 {
+				return true
+			}
 			return pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable
 		})
 
@@ -259,8 +262,9 @@ func isStandalonePCLQUpdated(pclq *grovecorev1alpha1.PodClique, expectedPodTempl
 		expectedPodTemplateHashes.Matches(*pclq.Status.CurrentPodTemplateHash) &&
 		pclq.Status.CurrentPodCliqueSetGenerationHash != nil &&
 		pcsGenerationHashCandidates.Matches(*pclq.Status.CurrentPodCliqueSetGenerationHash) &&
-		pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable &&
-		pclq.Status.UpdatedReplicas >= *pclq.Spec.MinAvailable
+		(pclq.Spec.Replicas == 0 ||
+			(pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable &&
+				pclq.Status.UpdatedReplicas >= *pclq.Spec.MinAvailable))
 }
 
 // computePCSGsStatus checks if PodCliqueScalingGroups are available and updated.
@@ -271,6 +275,9 @@ func (r *Reconciler) computePCSGsStatus(pcs *grovecorev1alpha1.PodCliqueSet, exp
 
 	isAvailable = expectedPCSGs == len(nonTerminatedPCSGs) &&
 		lo.EveryBy(nonTerminatedPCSGs, func(pcsg grovecorev1alpha1.PodCliqueScalingGroup) bool {
+			if pcsg.Spec.Replicas == 0 {
+				return true
+			}
 			return pcsg.Status.AvailableReplicas >= *pcsg.Spec.MinAvailable
 		})
 

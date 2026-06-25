@@ -216,6 +216,43 @@ func createExistingPodCliquesFromPCS(pcs *grovecorev1alpha1.PodCliqueSet, podCli
 	return existingPodCliques
 }
 
+func TestBuildResource_ZeroReplicaTemplateOverridesExistingReplicas(t *testing.T) {
+	tests := []struct {
+		name             string
+		templateReplicas int32
+		wantReplicas     int32
+	}{
+		{name: "zero template forces idle", templateReplicas: 0, wantReplicas: 0},
+		{name: "positive template preserves externally managed replicas", templateReplicas: 1, wantReplicas: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pcs := testutils.NewPodCliqueSetBuilder(testPCSName, testPCSNamespace, uuid.NewUUID()).
+				WithReplicas(1).
+				WithCliqueStartupType(ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder)).
+				WithPodCliqueTemplateSpec(&grovecorev1alpha1.PodCliqueTemplateSpec{
+					Name: "worker",
+					Spec: grovecorev1alpha1.PodCliqueSpec{
+						RoleName:     "worker",
+						Replicas:     tt.templateReplicas,
+						MinAvailable: ptr.To(int32(1)),
+					},
+				}).
+				Build()
+			pclq := testutils.NewPodCliqueBuilder(testPCSName, pcs.UID, "worker", testPCSNamespace, 0).
+				WithReplicas(3).
+				Build()
+			operator := &_resource{scheme: groveclientscheme.Scheme}
+
+			err := operator.buildResource(logr.Discard(), pclq, pcs, 0, true)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantReplicas, pclq.Spec.Replicas)
+		})
+	}
+}
+
 func TestBuildResource_MNNVLInjection(t *testing.T) {
 	tests := []struct {
 		description                         string

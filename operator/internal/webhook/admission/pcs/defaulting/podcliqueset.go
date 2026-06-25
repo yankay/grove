@@ -65,15 +65,12 @@ func defaultHeadlessServiceConfig(headlessServiceConfig *grovecorev1alpha1.Headl
 	return headlessServiceConfig
 }
 
-// defaultPodCliqueTemplateSpecs applies defaults to each PodClique template including replicas, minAvailable, and autoscaling configuration.
+// defaultPodCliqueTemplateSpecs applies defaults to each PodClique template including minAvailable and autoscaling configuration.
 func defaultPodCliqueTemplateSpecs(cliqueSpecs []*grovecorev1alpha1.PodCliqueTemplateSpec) []*grovecorev1alpha1.PodCliqueTemplateSpec {
 	defaultedCliqueSpecs := make([]*grovecorev1alpha1.PodCliqueTemplateSpec, 0, len(cliqueSpecs))
 	for _, cliqueSpec := range cliqueSpecs {
 		defaultedCliqueSpec := cliqueSpec.DeepCopy()
 		defaultedCliqueSpec.Spec.PodSpec = *defaultPodSpec(&cliqueSpec.Spec.PodSpec)
-		if defaultedCliqueSpec.Spec.Replicas == 0 {
-			defaultedCliqueSpec.Spec.Replicas = 1
-		}
 		if cliqueSpec.Spec.MinAvailable == nil {
 			defaultedCliqueSpec.Spec.MinAvailable = ptr.To(cliqueSpec.Spec.Replicas)
 		}

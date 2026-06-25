@@ -245,6 +245,15 @@ func computeMinAvailableBreachedCondition(pclq *grovecorev1alpha1.PodClique, num
 			Message: "Update is in progress",
 		}
 	}
+	if pclq.Spec.Replicas == 0 {
+		return metav1.Condition{
+			Type:               constants.ConditionTypeMinAvailableBreached,
+			Status:             metav1.ConditionFalse,
+			Reason:             constants.ConditionReasonSufficientReadyPods,
+			Message:            "PodClique is intentionally idle with replicas 0",
+			LastTransitionTime: metav1.Now(),
+		}
+	}
 	// dereferencing is considered safe as MinAvailable will always be set by the defaulting webhook. If this changes in the future,
 	// make sure that you check for nil explicitly.
 	minAvailable := int(*pclq.Spec.MinAvailable)
@@ -310,6 +319,15 @@ func mutatePodCliqueScheduledCondition(pclq *grovecorev1alpha1.PodClique) {
 // computePodCliqueScheduledCondition calculates the PodCliqueScheduled condition based on minimum availability requirements
 func computePodCliqueScheduledCondition(pclq *grovecorev1alpha1.PodClique) metav1.Condition {
 	now := metav1.Now()
+	if pclq.Spec.Replicas == 0 {
+		return metav1.Condition{
+			Type:               constants.ConditionTypePodCliqueScheduled,
+			Status:             metav1.ConditionTrue,
+			Reason:             constants.ConditionReasonSufficientScheduledPods,
+			Message:            "PodClique is intentionally idle with replicas 0",
+			LastTransitionTime: now,
+		}
+	}
 	if pclq.Status.ScheduledReplicas < *pclq.Spec.MinAvailable {
 		return metav1.Condition{
 			Type:               constants.ConditionTypePodCliqueScheduled,

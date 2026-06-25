@@ -38,7 +38,7 @@ func TestDefaultPodCliqueTemplateSpecs(t *testing.T) {
 		verify func(*testing.T, []*grovecorev1alpha1.PodCliqueTemplateSpec)
 	}{
 		{
-			name: "replicas defaults to 1 when 0",
+			name: "replicas preserves explicit 0",
 			input: []*grovecorev1alpha1.PodCliqueTemplateSpec{
 				{
 					Name: "clique1",
@@ -51,7 +51,7 @@ func TestDefaultPodCliqueTemplateSpecs(t *testing.T) {
 			},
 			verify: func(t *testing.T, result []*grovecorev1alpha1.PodCliqueTemplateSpec) {
 				require.Len(t, result, 1)
-				assert.Equal(t, int32(1), result[0].Spec.Replicas)
+				assert.Equal(t, int32(0), result[0].Spec.Replicas)
 			},
 		},
 		{
