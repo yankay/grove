@@ -162,6 +162,16 @@ func TestComputeMinAvailableBreachedCondition(t *testing.T) {
 			wantReason:   "InsufficientScheduledPodCliqueScalingGroupReplicas",
 		},
 		{
+			name:         "zero replicas are idle and do not breach",
+			replicas:     0,
+			minAvailable: ptr.To(int32(1)),
+			scheduled:    0,
+			available:    0,
+			pclqsMap:     make(map[string][]grovecorev1alpha1.PodClique),
+			wantStatus:   metav1.ConditionFalse,
+			wantReason:   "SufficientAvailablePodCliqueScalingGroupReplicas",
+		},
+		{
 			name:         "insufficient available",
 			replicas:     3,
 			minAvailable: ptr.To(int32(2)),

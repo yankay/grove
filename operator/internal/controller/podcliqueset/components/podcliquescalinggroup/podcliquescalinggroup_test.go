@@ -55,6 +55,51 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, eventRecorder, resource.eventRecorder)
 }
 
+func TestBuildResource_ZeroReplicaTemplateOverridesExistingReplicas(t *testing.T) {
+	tests := []struct {
+		name             string
+		templateReplicas int32
+		wantReplicas     int32
+	}{
+		{name: "zero template forces idle", templateReplicas: 0, wantReplicas: 0},
+		{name: "positive template preserves externally managed replicas", templateReplicas: 1, wantReplicas: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pcs := &grovecorev1alpha1.PodCliqueSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pcs",
+					Namespace: "default",
+					UID:       "pcs-uid",
+				},
+			}
+			pcsg := &grovecorev1alpha1.PodCliqueScalingGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pcs-0-prefill",
+					Namespace: "default",
+				},
+				Spec: grovecorev1alpha1.PodCliqueScalingGroupSpec{
+					Replicas: 3,
+				},
+			}
+			pcsgConfig := grovecorev1alpha1.PodCliqueScalingGroupConfig{
+				Name:         "prefill",
+				CliqueNames:  []string{"pleader", "pworker"},
+				Replicas:     ptr.To(tt.templateReplicas),
+				MinAvailable: ptr.To(int32(1)),
+			}
+			operator := &_resource{scheme: runtime.NewScheme()}
+			require.NoError(t, grovecorev1alpha1.AddToScheme(operator.scheme))
+
+			err := operator.buildResource(pcsg, pcs, 0, pcsgConfig, true)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantReplicas, pcsg.Spec.Replicas)
+		})
+	}
+}
+
 // TestGetExistingResourceNames tests getting existing PodCliqueScalingGroup names
 func TestGetExistingResourceNames(t *testing.T) {
 	tests := []struct {

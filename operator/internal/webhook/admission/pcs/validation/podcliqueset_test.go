@@ -19,6 +19,7 @@ package validation
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 )
 
 func TestResourceNamingValidation(t *testing.T) {
@@ -370,8 +372,20 @@ func TestPodCliqueScalingGroupConfigValidation(t *testing.T) {
 			cliqueTemplates: []string{"prefill"},
 			errorMatchers: []testutils.ErrorMatcher{
 				{ErrorType: field.ErrorTypeInvalid, Field: "spec.template.podCliqueScalingGroups[0].replicas"},
-				{ErrorType: field.ErrorTypeInvalid, Field: "spec.template.podCliqueScalingGroups[0].minAvailable"},
 			},
+		},
+		{
+			description: "Valid zero replicas with positive MinAvailable",
+			pcsName:     "inference",
+			scalingGroups: []grovecorev1alpha1.PodCliqueScalingGroupConfig{
+				{
+					Name:         "workers",
+					CliqueNames:  []string{"prefill"},
+					Replicas:     ptr.To(int32(0)),
+					MinAvailable: ptr.To(int32(1)),
+				},
+			},
+			cliqueTemplates: []string{"prefill"},
 		},
 		{
 			description: "Invalid MinAvailable (zero value)",
@@ -466,6 +480,84 @@ func TestPodCliqueScalingGroupConfigValidation(t *testing.T) {
 				assert.NoError(t, errs.ToAggregate(), "Expected no validation error for test case: %s", tc.description)
 			}
 			assert.Empty(t, warnings, "No warnings expected for these test cases")
+		})
+	}
+}
+
+func TestZeroReplicaGangMembershipSampleYAMLValidation(t *testing.T) {
+	pcs := loadZeroReplicaGangMembershipFixture(t)
+	validator := newPCSValidator(pcs, admissionv1.Create, defaultTASConfig(),
+		groveconfigv1alpha1.SchedulerConfiguration{
+			Profiles: []groveconfigv1alpha1.SchedulerProfile{
+				{Name: groveconfigv1alpha1.SchedulerNameKube},
+			},
+			DefaultProfileName: string(groveconfigv1alpha1.SchedulerNameKube),
+		}, nil, testutils.NewDefaultFakeRegistry())
+
+	warnings, errs := validator.validate()
+
+	require.NoError(t, errs.ToAggregate())
+	assert.Empty(t, warnings)
+}
+
+func TestPodCliqueZeroReplicaValidation(t *testing.T) {
+	tests := []struct {
+		name          string
+		replicas      int32
+		minAvailable  int32
+		errorMatchers []testutils.ErrorMatcher
+	}{
+		{
+			name:         "zero replicas with positive minAvailable is valid",
+			replicas:     0,
+			minAvailable: 1,
+		},
+		{
+			name:         "negative replicas is invalid",
+			replicas:     -1,
+			minAvailable: 1,
+			errorMatchers: []testutils.ErrorMatcher{
+				{ErrorType: field.ErrorTypeInvalid, Field: "spec.template.cliques[0].spec.replicas"},
+			},
+		},
+		{
+			name:         "positive replicas below minAvailable is invalid",
+			replicas:     1,
+			minAvailable: 2,
+			errorMatchers: []testutils.ErrorMatcher{
+				{ErrorType: field.ErrorTypeInvalid, Field: "spec.template.cliques[0].spec.minAvailable"},
+			},
+		},
+		{
+			name:         "minAvailable zero is invalid",
+			replicas:     0,
+			minAvailable: 0,
+			errorMatchers: []testutils.ErrorMatcher{
+				{ErrorType: field.ErrorTypeInvalid, Field: "spec.template.cliques[0].spec.minAvailable"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pcs := createTestPodCliqueSet("inference")
+			pcs.Spec.Template.Cliques[0].Spec.Replicas = tt.replicas
+			pcs.Spec.Template.Cliques[0].Spec.MinAvailable = ptr.To(tt.minAvailable)
+			validator := newPCSValidator(pcs, admissionv1.Create, defaultTASConfig(),
+				groveconfigv1alpha1.SchedulerConfiguration{
+					Profiles: []groveconfigv1alpha1.SchedulerProfile{
+						{Name: groveconfigv1alpha1.SchedulerNameKube},
+					},
+					DefaultProfileName: string(groveconfigv1alpha1.SchedulerNameKube),
+				}, nil, testutils.NewDefaultFakeRegistry())
+
+			_, errs := validator.validate()
+
+			if tt.errorMatchers != nil {
+				testutils.AssertErrorMatches(t, errs, tt.errorMatchers)
+			} else {
+				assert.NoError(t, errs.ToAggregate())
+			}
 		})
 	}
 }
@@ -1923,6 +2015,17 @@ func createScalingGroupConfig(name string, cliqueNames []string) grovecorev1alph
 		Name:        name,
 		CliqueNames: cliqueNames,
 	}
+}
+
+func loadZeroReplicaGangMembershipFixture(t *testing.T) *grovecorev1alpha1.PodCliqueSet {
+	t.Helper()
+
+	data, err := os.ReadFile("../../../../testdata/zero-replica-gang-membership.yaml")
+	require.NoError(t, err)
+
+	pcs := &grovecorev1alpha1.PodCliqueSet{}
+	require.NoError(t, yaml.Unmarshal(data, pcs))
+	return pcs
 }
 
 func createTestClusterTopology() *grovecorev1alpha1.ClusterTopologyBinding {

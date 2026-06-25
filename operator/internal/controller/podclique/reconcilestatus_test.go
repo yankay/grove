@@ -496,6 +496,22 @@ func TestComputeMinAvailableBreachedConditionPartialScheduleRegression(t *testin
 			wantReason: constants.ConditionReasonInsufficientScheduledPods,
 		},
 		{
+			name: "zero replicas are idle and do not breach",
+			pclq: &grovecorev1alpha1.PodClique{
+				Spec: grovecorev1alpha1.PodCliqueSpec{
+					Replicas:     0,
+					MinAvailable: ptr.To(int32(1)),
+				},
+				Status: grovecorev1alpha1.PodCliqueStatus{
+					ObservedGeneration: ptr.To(int64(1)),
+					ScheduledReplicas:  0,
+					ReadyReplicas:      0,
+				},
+			},
+			wantStatus: metav1.ConditionFalse,
+			wantReason: constants.ConditionReasonSufficientReadyPods,
+		},
+		{
 			// Sanity case that the fix must preserve: a freshly-created PCLQ
 			// that has not yet scheduled any pods MUST NOT be considered breached.
 			name: "fresh PCLQ never scheduled — must not breach",
@@ -526,4 +542,22 @@ func TestComputeMinAvailableBreachedConditionPartialScheduleRegression(t *testin
 			assert.Equal(t, tt.wantReason, condition.Reason, "MinAvailableBreached reason mismatch")
 		})
 	}
+}
+
+func TestComputePodCliqueScheduledConditionTreatsZeroReplicasAsScheduled(t *testing.T) {
+	pclq := &grovecorev1alpha1.PodClique{
+		Spec: grovecorev1alpha1.PodCliqueSpec{
+			Replicas:     0,
+			MinAvailable: ptr.To(int32(1)),
+		},
+		Status: grovecorev1alpha1.PodCliqueStatus{
+			ScheduledReplicas: 0,
+		},
+	}
+
+	condition := computePodCliqueScheduledCondition(pclq)
+
+	assert.Equal(t, constants.ConditionTypePodCliqueScheduled, condition.Type)
+	assert.Equal(t, metav1.ConditionTrue, condition.Status)
+	assert.Equal(t, constants.ConditionReasonSufficientScheduledPods, condition.Reason)
 }

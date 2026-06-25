@@ -219,6 +219,9 @@ func buildStandalonePCLQInfosForBasePodGang(sc *syncContext, pcsReplica int) []p
 		// Check if this PodClique belongs to a scaling group
 		pcsgConfig := componentutils.FindScalingGroupConfigForClique(sc.pcs.Spec.Template.PodCliqueScalingGroupConfigs, pclqTemplateSpec.Name)
 		if pcsgConfig == nil { // Standalone PodClique
+			if pclqTemplateSpec.Spec.Replicas == 0 {
+				continue
+			}
 			pclqFQN := apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{Name: sc.pcs.Name, Replica: pcsReplica}, pclqTemplateSpec.Name)
 			pclqInfos = append(pclqInfos, buildPodCliqueInfo(sc, pclqTemplateSpec, pclqFQN, false))
 		}
@@ -232,9 +235,16 @@ func buildPCSGPackConstraintsAndPCLQsForBasePodGang(sc *syncContext, pcsReplica 
 		pcsgPackConstraints []groveschedulerv1alpha1.TopologyConstraintGroupConfig
 	)
 	for _, pcsgConfig := range sc.pcs.Spec.Template.PodCliqueScalingGroupConfigs {
-		// Iterate through replicas of the PCSG that belong to the base PodGang [0, minAvailable-1]
+		pcsgFQN := apicommon.GeneratePodCliqueScalingGroupName(apicommon.ResourceNameReplica{Name: sc.pcs.Name, Replica: pcsReplica}, pcsgConfig.Name)
+		replicas := sc.determinePCSGReplicas(pcsgFQN, pcsgConfig)
 		minAvailable := int(*pcsgConfig.MinAvailable)
-		pcsgPodCliqueInfos, pcsgTopologyConstraints, err := doBuildBasePodGangPCLQsAndPCSGPackConstraints(sc, pcsReplica, pcsgConfig, minAvailable)
+		baseReplicas := minAvailable
+		if replicas == 0 {
+			baseReplicas = 0
+		}
+		// Iterate through replicas of the PCSG that belong to the base PodGang [0, baseReplicas-1].
+		// If the PCSG has been intentionally scaled to zero, it contributes no base PodGang members.
+		pcsgPodCliqueInfos, pcsgTopologyConstraints, err := doBuildBasePodGangPCLQsAndPCSGPackConstraints(sc, pcsReplica, pcsgConfig, baseReplicas)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to build PCSG TopologyConstraintGroupConfigs and PodClique infos for base PodGang for PCSG %q: %w", pcsgConfig.Name, err)
 		}
@@ -284,8 +294,12 @@ func (r _resource) buildExpectedScaledPodGangsForPCSG(sc *syncContext, pcsReplic
 		pcsgFQN := apicommon.GeneratePodCliqueScalingGroupName(apicommon.ResourceNameReplica{Name: sc.pcs.Name, Replica: pcsReplica}, pcsgConfig.Name)
 		replicas := sc.determinePCSGReplicas(pcsgFQN, pcsgConfig)
 		minAvailable := int(*pcsgConfig.MinAvailable)
-		scaledReplicas := replicas - minAvailable
-		for podGangIndex, pcsgReplica := 0, minAvailable; podGangIndex < scaledReplicas; podGangIndex, pcsgReplica = podGangIndex+1, pcsgReplica+1 {
+		baseReplicas := minAvailable
+		if replicas == 0 {
+			baseReplicas = 0
+		}
+		scaledReplicas := replicas - baseReplicas
+		for podGangIndex, pcsgReplica := 0, baseReplicas; podGangIndex < scaledReplicas; podGangIndex, pcsgReplica = podGangIndex+1, pcsgReplica+1 {
 			pg, err := doBuildExpectedScaledPodGangForPCSG(sc, pcsgFQN, pcsgConfig, pcsgReplica, podGangIndex)
 			if err != nil {
 				return nil, fmt.Errorf("failed to build expected scaled PodGang for PCSG %q replica %d: %w", pcsgFQN, pcsgReplica, err)
