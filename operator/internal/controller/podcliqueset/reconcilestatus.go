@@ -45,6 +45,14 @@ import (
 func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet) ctrlcommon.ReconcileStepResult {
 	// Snapshot status before mutations so we can skip the Update call when nothing changes.
 	originalStatus := pcs.Status.DeepCopy()
+	logger.Info("RU11_DIAG PCS status reconcile start",
+		"cacheResourceVersion", pcs.ResourceVersion,
+		"cacheGeneration", pcs.Generation,
+		"cacheReplicas", pcs.Status.Replicas,
+		"cacheAvailableReplicas", pcs.Status.AvailableReplicas,
+		"cacheUpdatedReplicas", pcs.Status.UpdatedReplicas,
+		"cacheCurrentlyUpdating", currentPCSUpdatingCount(pcs),
+		"cacheUpdateEnded", pcs.Status.UpdateProgress != nil && pcs.Status.UpdateProgress.UpdateEndedAt != nil)
 
 	// Calculate available replicas using PCSG-inspired approach
 	err := r.mutateReplicas(ctx, logger, pcs)
@@ -60,6 +68,18 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 	if err = mutateSelector(pcs); err != nil {
 		return ctrlcommon.ReconcileWithErrors("failed to update selector for PodCliqueSet", err)
 	}
+	logger.Info("RU11_DIAG PCS status reconcile calculated",
+		"cacheResourceVersion", pcs.ResourceVersion,
+		"originalAvailableReplicas", originalStatus.AvailableReplicas,
+		"calculatedAvailableReplicas", pcs.Status.AvailableReplicas,
+		"originalUpdatedReplicas", originalStatus.UpdatedReplicas,
+		"calculatedUpdatedReplicas", pcs.Status.UpdatedReplicas,
+		"originalUpdatedPCLQs", updatedPCLQCount(originalStatus),
+		"calculatedUpdatedPCLQs", updatedPCLQCount(&pcs.Status),
+		"originalUpdatedPCSGs", updatedPCSGCount(originalStatus),
+		"calculatedUpdatedPCSGs", updatedPCSGCount(&pcs.Status),
+		"currentlyUpdating", currentPCSUpdatingCount(pcs),
+		"updateEnded", pcs.Status.UpdateProgress != nil && pcs.Status.UpdateProgress.UpdateEndedAt != nil)
 
 	// Skip the status update when every mutate* above left status byte-identical to what
 	// the previous reconcile already persisted. The mutators are the only code writing
@@ -68,14 +88,60 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 	// every PCS observer and cascades into spurious reconciles. equality.Semantic is
 	// required because the status mixes counters, pointers, and conditions.
 	if equality.Semantic.DeepEqual(*originalStatus, pcs.Status) {
+		logger.Info("RU11_DIAG PCS status update skipped as no-op",
+			"cacheResourceVersion", pcs.ResourceVersion,
+			"updatedReplicas", pcs.Status.UpdatedReplicas,
+			"currentlyUpdating", currentPCSUpdatingCount(pcs),
+			"updateEnded", pcs.Status.UpdateProgress != nil && pcs.Status.UpdateProgress.UpdateEndedAt != nil)
 		return ctrlcommon.ContinueReconcile()
 	}
 
 	// Update the PodCliqueSet status
+	logger.Info("RU11_DIAG PCS full status update start",
+		"requestResourceVersion", pcs.ResourceVersion,
+		"originalUpdatedReplicas", originalStatus.UpdatedReplicas,
+		"newUpdatedReplicas", pcs.Status.UpdatedReplicas,
+		"originalUpdatedPCLQs", updatedPCLQCount(originalStatus),
+		"newUpdatedPCLQs", updatedPCLQCount(&pcs.Status),
+		"originalUpdatedPCSGs", updatedPCSGCount(originalStatus),
+		"newUpdatedPCSGs", updatedPCSGCount(&pcs.Status),
+		"currentlyUpdating", currentPCSUpdatingCount(pcs),
+		"updateEnded", pcs.Status.UpdateProgress != nil && pcs.Status.UpdateProgress.UpdateEndedAt != nil)
 	if err = r.client.Status().Update(ctx, pcs); err != nil {
+		logger.Error(err, "RU11_DIAG PCS full status update failed",
+			"requestResourceVersion", pcs.ResourceVersion,
+			"newUpdatedReplicas", pcs.Status.UpdatedReplicas)
 		return ctrlcommon.ReconcileWithErrors("failed to update PodCliqueSet status", err)
 	}
+	logger.Info("RU11_DIAG PCS full status update complete",
+		"resultResourceVersion", pcs.ResourceVersion,
+		"resultUpdatedReplicas", pcs.Status.UpdatedReplicas,
+		"resultUpdatedPCLQs", updatedPCLQCount(&pcs.Status),
+		"resultUpdatedPCSGs", updatedPCSGCount(&pcs.Status),
+		"resultCurrentlyUpdating", currentPCSUpdatingCount(pcs),
+		"resultUpdateEnded", pcs.Status.UpdateProgress != nil && pcs.Status.UpdateProgress.UpdateEndedAt != nil)
 	return ctrlcommon.ContinueReconcile()
+}
+
+func currentPCSUpdatingCount(pcs *grovecorev1alpha1.PodCliqueSet) int {
+	if pcs.Status.UpdateProgress == nil {
+		return 0
+	}
+	return len(pcs.Status.UpdateProgress.CurrentlyUpdating)
+}
+
+func updatedPCLQCount(status *grovecorev1alpha1.PodCliqueSetStatus) int32 {
+	if status.UpdateProgress == nil {
+		return 0
+	}
+	return status.UpdateProgress.UpdatedPodCliquesCount
+}
+
+func updatedPCSGCount(status *grovecorev1alpha1.PodCliqueSetStatus) int32 {
+	if status.UpdateProgress == nil {
+		return 0
+	}
+	return status.UpdateProgress.UpdatedPodCliqueScalingGroupsCount
 }
 
 // mutateReplicas updates the PodCliqueSet status replica counts and update-progress counts.
@@ -184,6 +250,74 @@ func (r *Reconciler) computeAvailableAndUpdatedReplicas(ctx context.Context, log
 
 		isReplicaAvailable, isReplicaUpdated := r.computeReplicaStatus(pcs, replicaPCSGs,
 			replicaStandalonePCLQs, expectedPCSGCount, expectedPCLQCount)
+		for i := range replicaStandalonePCLQs {
+			pclq := &replicaStandalonePCLQs[i]
+			minAvailable := int32(-1)
+			if pclq.Spec.MinAvailable != nil {
+				minAvailable = *pclq.Spec.MinAvailable
+			}
+			expectedPodTemplateHash := ""
+			if hash, hashErr := componentutils.GetExpectedPCLQPodTemplateHash(pcs, pclq.ObjectMeta); hashErr == nil {
+				expectedPodTemplateHash = hash
+			}
+			currentPodTemplateHash := ""
+			if pclq.Status.CurrentPodTemplateHash != nil {
+				currentPodTemplateHash = *pclq.Status.CurrentPodTemplateHash
+			}
+			currentPCSGenerationHash := ""
+			if pclq.Status.CurrentPodCliqueSetGenerationHash != nil {
+				currentPCSGenerationHash = *pclq.Status.CurrentPodCliqueSetGenerationHash
+			}
+			logger.Info("RU11_DIAG status PCLQ decision",
+				"replicaIndex", replicaIndex,
+				"pclq", client.ObjectKeyFromObject(pclq),
+				"pclqResourceVersion", pclq.ResourceVersion,
+				"labelPodTemplateHash", pclq.Labels[apicommon.LabelPodTemplateHash],
+				"currentPodTemplateHash", currentPodTemplateHash,
+				"expectedPodTemplateHash", expectedPodTemplateHash,
+				"currentPCSGenerationHash", currentPCSGenerationHash,
+				"targetPCSGenerationHash", ptr.Deref(pcs.Status.CurrentGenerationHash, ""),
+				"readyReplicas", pclq.Status.ReadyReplicas,
+				"updatedReplicas", pclq.Status.UpdatedReplicas,
+				"minAvailable", minAvailable,
+				"availableForStatus", pclq.Spec.MinAvailable != nil && pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable,
+				"updatedForStatus", isStandalonePCLQUpdated(pcs, pclq))
+		}
+		for i := range replicaPCSGs {
+			pcsg := &replicaPCSGs[i]
+			minAvailable := int32(-1)
+			if pcsg.Spec.MinAvailable != nil {
+				minAvailable = *pcsg.Spec.MinAvailable
+			}
+			currentPCSGenerationHash := ""
+			if pcsg.Status.CurrentPodCliqueSetGenerationHash != nil {
+				currentPCSGenerationHash = *pcsg.Status.CurrentPodCliqueSetGenerationHash
+			}
+			generationComplete := pcs.Status.CurrentGenerationHash != nil &&
+				componentutils.IsPCSGUpdateComplete(pcsg, *pcs.Status.CurrentGenerationHash)
+			availabilityComplete := pcsg.Spec.MinAvailable != nil &&
+				pcsg.Status.AvailableReplicas >= *pcsg.Spec.MinAvailable
+			logger.Info("RU11_DIAG status PCSG decision",
+				"replicaIndex", replicaIndex,
+				"pcsg", client.ObjectKeyFromObject(pcsg),
+				"pcsgResourceVersion", pcsg.ResourceVersion,
+				"currentPCSGenerationHash", currentPCSGenerationHash,
+				"targetPCSGenerationHash", ptr.Deref(pcs.Status.CurrentGenerationHash, ""),
+				"availableReplicas", pcsg.Status.AvailableReplicas,
+				"updatedReplicas", pcsg.Status.UpdatedReplicas,
+				"minAvailable", minAvailable,
+				"generationComplete", generationComplete,
+				"availabilityComplete", availabilityComplete,
+				"updatedForStatus", generationComplete && availabilityComplete)
+		}
+		logger.Info("RU11_DIAG status replica decision",
+			"replicaIndex", replicaIndex,
+			"expectedPCLQs", expectedPCLQCount,
+			"observedPCLQs", len(replicaStandalonePCLQs),
+			"expectedPCSGs", expectedPCSGCount,
+			"observedPCSGs", len(replicaPCSGs),
+			"available", isReplicaAvailable,
+			"updated", isReplicaUpdated)
 		if isReplicaAvailable {
 			stats.availableReplicas++
 		}

@@ -36,6 +36,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	ctrllogger "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // reconcileSpec performs the main reconciliation logic for PodClique spec changes
@@ -93,11 +94,36 @@ func (r *Reconciler) processUpdate(ctx context.Context, logger logr.Logger, pclq
 	if err != nil {
 		return ctrlcommon.ReconcileWithErrors("error checking if PodClique should be evaluated for pending updates", err)
 	}
+	logger.Info("RU11_DIAG PCLQ update eligibility",
+		"pclqResourceVersion", pclq.ResourceVersion,
+		"pclqGeneration", pclq.Generation,
+		"pcsResourceVersion", pcs.ResourceVersion,
+		"pcsGeneration", pcs.Generation,
+		"pcsCurrentGenerationHash", ptr.Deref(pcs.Status.CurrentGenerationHash, ""),
+		"pclqCurrentGenerationHash", ptr.Deref(pclq.Status.CurrentPodCliqueSetGenerationHash, ""),
+		"pclqUpdateProgressPresent", pclq.Status.UpdateProgress != nil,
+		"pclqUpdateTargetGenerationHash", pclqUpdateTargetGenerationHash(pclq),
+		"pclqUpdateInProgress", componentutils.IsPCLQAutoUpdateInProgress(pclq),
+		"pclqLastUpdateCompleted", componentutils.IsLastPCLQUpdateCompleted(pclq),
+		"pcsUpdateProgressPresent", pcs.Status.UpdateProgress != nil,
+		"pcsUpdateEnded", pcs.Status.UpdateProgress != nil && pcs.Status.UpdateProgress.UpdateEndedAt != nil,
+		"pcsCurrentlyUpdating", pcsCurrentlyUpdatingCount(pcs),
+		"shouldEvaluate", shouldEvaluatePCLQForUpdates)
 	if !shouldEvaluatePCLQForUpdates {
 		return ctrlcommon.ContinueReconcile()
 	}
 
-	if shouldResetOrTriggerUpdate(pcs, pclq) {
+	shouldResetUpdate := shouldResetOrTriggerUpdate(pcs, pclq)
+	logger.Info("RU11_DIAG PCLQ update reset decision",
+		"pclqResourceVersion", pclq.ResourceVersion,
+		"pclqUpdatedReplicas", pclq.Status.UpdatedReplicas,
+		"pclqReadyReplicas", pclq.Status.ReadyReplicas,
+		"pcsCurrentGenerationHash", ptr.Deref(pcs.Status.CurrentGenerationHash, ""),
+		"pclqCurrentGenerationHash", ptr.Deref(pclq.Status.CurrentPodCliqueSetGenerationHash, ""),
+		"pclqUpdateProgressPresent", pclq.Status.UpdateProgress != nil,
+		"pclqUpdateTargetGenerationHash", pclqUpdateTargetGenerationHash(pclq),
+		"shouldReset", shouldResetUpdate)
+	if shouldResetUpdate {
 		logger.Info("PodCliqueSet has a new generation hash. Initializing or resetting update for PodClique", "PodCliqueSetGenerationHash", *pcs.Status.CurrentGenerationHash, "CurrentPodCliqueSetGenerationHash", pclq.Status.CurrentPodCliqueSetGenerationHash, "isPCLQAutoUpdateInProgress", componentutils.IsPCLQAutoUpdateInProgress(pclq), "isLastPCLQUpdateCompleted", componentutils.IsLastPCLQUpdateCompleted(pclq))
 		if err = r.initOrResetUpdate(ctx, pcs, pclq); err != nil {
 			return ctrlcommon.ReconcileWithErrors("could not initialize RollingRecreate update", err)
@@ -167,14 +193,39 @@ func shouldResetOrTriggerUpdate(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grove
 	return true
 }
 
+func pclqUpdateTargetGenerationHash(pclq *grovecorev1alpha1.PodClique) string {
+	if pclq.Status.UpdateProgress == nil {
+		return ""
+	}
+	return pclq.Status.UpdateProgress.PodCliqueSetGenerationHash
+}
+
+func pcsCurrentlyUpdatingCount(pcs *grovecorev1alpha1.PodCliqueSet) int {
+	if pcs.Status.UpdateProgress == nil {
+		return 0
+	}
+	return len(pcs.Status.UpdateProgress.CurrentlyUpdating)
+}
+
 // initOrResetUpdate initializes or resets the update progress status for the PodClique
 func (r *Reconciler) initOrResetUpdate(ctx context.Context, pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1alpha1.PodClique) error {
+	logger := ctrllogger.FromContext(ctx).WithName(controllerName)
 	podTemplateHash, err := componentutils.GetExpectedPCLQPodTemplateHash(pcs, pclq.ObjectMeta)
 	if err != nil {
 		return fmt.Errorf("could not update PodClique %s status with update progress: %w", client.ObjectKeyFromObject(pclq), err)
 	}
 	// reset and start the update
 	patch := client.MergeFrom(pclq.DeepCopy())
+	logger.Info("RU11_DIAG PCLQ reset patch start",
+		"pclq", client.ObjectKeyFromObject(pclq),
+		"originalResourceVersion", pclq.ResourceVersion,
+		"originalUpdatedReplicas", pclq.Status.UpdatedReplicas,
+		"originalReadyReplicas", pclq.Status.ReadyReplicas,
+		"originalCurrentGenerationHash", ptr.Deref(pclq.Status.CurrentPodCliqueSetGenerationHash, ""),
+		"originalUpdateProgressPresent", pclq.Status.UpdateProgress != nil,
+		"originalUpdateTargetGenerationHash", pclqUpdateTargetGenerationHash(pclq),
+		"newUpdateTargetGenerationHash", ptr.Deref(pcs.Status.CurrentGenerationHash, ""),
+		"newUpdateTargetPodTemplateHash", podTemplateHash)
 	pclq.Status.UpdateProgress = &grovecorev1alpha1.PodCliqueUpdateProgress{
 		UpdateStartedAt:            metav1.Now(),
 		PodCliqueSetGenerationHash: *pcs.Status.CurrentGenerationHash,
@@ -189,6 +240,13 @@ func (r *Reconciler) initOrResetUpdate(ctx context.Context, pcs *grovecorev1alph
 	if err = r.client.Status().Patch(ctx, pclq, patch); err != nil {
 		return fmt.Errorf("failed to update PodClique %s status with update progress: %w", client.ObjectKeyFromObject(pclq), err)
 	}
+	logger.Info("RU11_DIAG PCLQ reset patch complete",
+		"pclq", client.ObjectKeyFromObject(pclq),
+		"resultResourceVersion", pclq.ResourceVersion,
+		"resultUpdatedReplicas", pclq.Status.UpdatedReplicas,
+		"resultReadyReplicas", pclq.Status.ReadyReplicas,
+		"resultCurrentGenerationHash", ptr.Deref(pclq.Status.CurrentPodCliqueSetGenerationHash, ""),
+		"resultUpdateTargetGenerationHash", pclqUpdateTargetGenerationHash(pclq))
 	return nil
 }
 
