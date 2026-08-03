@@ -954,6 +954,13 @@ collision-free.
 
 The `rctName` is the name of the referenced `ResourceClaimTemplateConfig` or external `ResourceClaimTemplate`.
 
+The generated ResourceClaim name is also used as the local claim name in
+`pod.spec.resourceClaims[].name` and container `resources.claims[].name`. These fields require a
+DNS label, so the complete generated name must contain only lowercase alphanumeric characters or
+`-` and must not exceed 63 characters. The validating admission webhook checks the complete name
+for every sharing level and scope. For indexed names it uses the largest index reachable from the
+configured replica count or `scaleConfig.maxReplicas`.
+
 **Concrete example** — PCS `disagg` (replica 0), PCSG `sgx` (replicas: 2), cliques in PCSG:
 `pca` (replicas: 3), `pcb` (replicas: 2); standalone PCLQ: `metrics` (replicas: 2).
 PCS AllReplicas rctName=res1, PCS PerReplica rctName=res2, PCSG PerReplica rctName=gpu-pool,
