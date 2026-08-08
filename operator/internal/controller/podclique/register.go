@@ -193,17 +193,30 @@ func hasStartedAndReadyChangedForAnyContainer(oldContainerStatuses []corev1.Cont
 // mapPodCliqueSetToPCLQs maps a PodCliqueSet to one or more reconcile.Request(s) to its constituent standalone Podcliques.
 // These events are needed to keep the PodClique.Status.CurrentPodCliqueSetGenerationHash in sync with the PodCliqueSet.
 func mapPodCliqueSetToPCLQs() handler.MapFunc {
-	return func(_ context.Context, obj client.Object) []reconcile.Request {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		pcs, ok := obj.(*grovecorev1alpha1.PodCliqueSet)
 		if !ok {
 			return nil
 		}
-		return lo.Map(componentutils.GetPodCliqueFQNsForPCSNotInPCSG(pcs), func(pclqFQN string, _ int) reconcile.Request {
+		requests := lo.Map(componentutils.GetPodCliqueFQNsForPCSNotInPCSG(pcs), func(pclqFQN string, _ int) reconcile.Request {
 			return reconcile.Request{NamespacedName: types.NamespacedName{
 				Namespace: pcs.Namespace,
 				Name:      pclqFQN,
 			}}
 		})
+		ctrllogger.FromContext(ctx).WithName(controllerName).Info("RU11_DIAG PCLQ watch mapped PCS event",
+			"pcs", client.ObjectKeyFromObject(pcs),
+			"pcsResourceVersion", pcs.ResourceVersion,
+			"pcsGeneration", pcs.Generation,
+			"pcsCurrentGenerationHash", stringPointerValue(pcs.Status.CurrentGenerationHash),
+			"pcsReplicas", pcs.Status.Replicas,
+			"pcsAvailableReplicas", pcs.Status.AvailableReplicas,
+			"pcsUpdatedReplicas", pcs.Status.UpdatedReplicas,
+			"pcsUpdateProgressPresent", pcs.Status.UpdateProgress != nil,
+			"pcsUpdateEnded", pcs.Status.UpdateProgress != nil && pcs.Status.UpdateProgress.UpdateEndedAt != nil,
+			"pcsCurrentlyUpdating", pcsCurrentlyUpdatingCount(pcs),
+			"enqueuedPCLQs", diagnosticRequestNames(requests))
+		return requests
 	}
 }
 
@@ -218,8 +231,33 @@ func podCliqueSetPredicate() predicate.Predicate {
 			if !okOld || !okNew {
 				return false
 			}
-			return !stringPointersEqual(oldPCS.Status.CurrentGenerationHash, newPCS.Status.CurrentGenerationHash) ||
-				pcsCurrentlyUpdatingReplicaChanged(oldPCS.Status.UpdateProgress, newPCS.Status.UpdateProgress)
+			generationHashChanged := !stringPointersEqual(oldPCS.Status.CurrentGenerationHash, newPCS.Status.CurrentGenerationHash)
+			currentlyUpdatingChanged := pcsCurrentlyUpdatingReplicaChanged(oldPCS.Status.UpdateProgress, newPCS.Status.UpdateProgress)
+			enqueue := generationHashChanged || currentlyUpdatingChanged
+			oldReplicaIndex, oldReplicaSelected := currentPCSReplicaInUpdate(oldPCS.Status.UpdateProgress)
+			newReplicaIndex, newReplicaSelected := currentPCSReplicaInUpdate(newPCS.Status.UpdateProgress)
+			ctrllogger.Log.WithName(controllerName).Info("RU11_DIAG PCLQ watch observed PCS update",
+				"pcs", client.ObjectKeyFromObject(newPCS),
+				"oldResourceVersion", oldPCS.ResourceVersion,
+				"newResourceVersion", newPCS.ResourceVersion,
+				"oldGeneration", oldPCS.Generation,
+				"newGeneration", newPCS.Generation,
+				"oldCurrentGenerationHash", stringPointerValue(oldPCS.Status.CurrentGenerationHash),
+				"newCurrentGenerationHash", stringPointerValue(newPCS.Status.CurrentGenerationHash),
+				"generationHashChanged", generationHashChanged,
+				"oldUpdatedReplicas", oldPCS.Status.UpdatedReplicas,
+				"newUpdatedReplicas", newPCS.Status.UpdatedReplicas,
+				"oldUpdateProgressPresent", oldPCS.Status.UpdateProgress != nil,
+				"newUpdateProgressPresent", newPCS.Status.UpdateProgress != nil,
+				"oldUpdateEnded", oldPCS.Status.UpdateProgress != nil && oldPCS.Status.UpdateProgress.UpdateEndedAt != nil,
+				"newUpdateEnded", newPCS.Status.UpdateProgress != nil && newPCS.Status.UpdateProgress.UpdateEndedAt != nil,
+				"oldReplicaSelected", oldReplicaSelected,
+				"newReplicaSelected", newReplicaSelected,
+				"oldCurrentlyUpdatingReplica", oldReplicaIndex,
+				"newCurrentlyUpdatingReplica", newReplicaIndex,
+				"currentlyUpdatingChanged", currentlyUpdatingChanged,
+				"enqueue", enqueue)
+			return enqueue
 		},
 		GenericFunc: func(_ event.GenericEvent) bool { return false },
 	}
@@ -246,17 +284,30 @@ func currentPCSReplicaInUpdate(progress *grovecorev1alpha1.PodCliqueSetUpdatePro
 // mapPodCliqueScalingGroupToPCLQs maps a PodCliqueScalingGroup to one or more reconcile.Request(s) to its constituent PodCliques.
 // These events are needed to keep the PodClique.Status.CurrentPodCliqueSetGenerationHash in sync with the PodCliqueSet.
 func mapPodCliqueScalingGroupToPCLQs() handler.MapFunc {
-	return func(_ context.Context, obj client.Object) []reconcile.Request {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		pcsg, ok := obj.(*grovecorev1alpha1.PodCliqueScalingGroup)
 		if !ok {
 			return nil
 		}
-		return lo.Map(componentutils.GetPodCliqueFQNsForPCSG(pcsg), func(pclqFQN string, _ int) reconcile.Request {
+		requests := lo.Map(componentutils.GetPodCliqueFQNsForPCSG(pcsg), func(pclqFQN string, _ int) reconcile.Request {
 			return reconcile.Request{NamespacedName: types.NamespacedName{
 				Namespace: pcsg.Namespace,
 				Name:      pclqFQN,
 			}}
 		})
+		ctrllogger.FromContext(ctx).WithName(controllerName).Info("RU11_DIAG PCLQ watch mapped PCSG event",
+			"pcsg", client.ObjectKeyFromObject(pcsg),
+			"pcsgResourceVersion", pcsg.ResourceVersion,
+			"pcsgGeneration", pcsg.Generation,
+			"pcsgCurrentGenerationHash", stringPointerValue(pcsg.Status.CurrentPodCliqueSetGenerationHash),
+			"pcsgReplicas", pcsg.Status.Replicas,
+			"pcsgAvailableReplicas", pcsg.Status.AvailableReplicas,
+			"pcsgUpdatedReplicas", pcsg.Status.UpdatedReplicas,
+			"pcsgUpdateProgressPresent", pcsg.Status.UpdateProgress != nil,
+			"pcsgUpdateTargetGenerationHash", pcsgWatchUpdateTargetGenerationHash(pcsg),
+			"pcsgUpdateEnded", pcsg.Status.UpdateProgress != nil && pcsg.Status.UpdateProgress.UpdateEndedAt != nil,
+			"enqueuedPCLQs", diagnosticRequestNames(requests))
+		return requests
 	}
 }
 
@@ -271,8 +322,31 @@ func podCliqueScalingGroupPredicate() predicate.Predicate {
 			if !okOld || !okNew {
 				return false
 			}
-			return !stringPointersEqual(oldPCSG.Status.CurrentPodCliqueSetGenerationHash, newPCSG.Status.CurrentPodCliqueSetGenerationHash) ||
-				pcsgUpdateTargetGenerationChanged(oldPCSG.Status.UpdateProgress, newPCSG.Status.UpdateProgress)
+			generationHashChanged := !stringPointersEqual(oldPCSG.Status.CurrentPodCliqueSetGenerationHash, newPCSG.Status.CurrentPodCliqueSetGenerationHash)
+			updateTargetChanged := pcsgUpdateTargetGenerationChanged(oldPCSG.Status.UpdateProgress, newPCSG.Status.UpdateProgress)
+			enqueue := generationHashChanged || updateTargetChanged
+			ctrllogger.Log.WithName(controllerName).Info("RU11_DIAG PCLQ watch observed PCSG update",
+				"pcsg", client.ObjectKeyFromObject(newPCSG),
+				"oldResourceVersion", oldPCSG.ResourceVersion,
+				"newResourceVersion", newPCSG.ResourceVersion,
+				"oldGeneration", oldPCSG.Generation,
+				"newGeneration", newPCSG.Generation,
+				"oldCurrentGenerationHash", stringPointerValue(oldPCSG.Status.CurrentPodCliqueSetGenerationHash),
+				"newCurrentGenerationHash", stringPointerValue(newPCSG.Status.CurrentPodCliqueSetGenerationHash),
+				"generationHashChanged", generationHashChanged,
+				"oldAvailableReplicas", oldPCSG.Status.AvailableReplicas,
+				"newAvailableReplicas", newPCSG.Status.AvailableReplicas,
+				"oldUpdatedReplicas", oldPCSG.Status.UpdatedReplicas,
+				"newUpdatedReplicas", newPCSG.Status.UpdatedReplicas,
+				"oldUpdateProgressPresent", oldPCSG.Status.UpdateProgress != nil,
+				"newUpdateProgressPresent", newPCSG.Status.UpdateProgress != nil,
+				"oldUpdateTargetGenerationHash", pcsgWatchUpdateTargetGenerationHash(oldPCSG),
+				"newUpdateTargetGenerationHash", pcsgWatchUpdateTargetGenerationHash(newPCSG),
+				"oldUpdateEnded", oldPCSG.Status.UpdateProgress != nil && oldPCSG.Status.UpdateProgress.UpdateEndedAt != nil,
+				"newUpdateEnded", newPCSG.Status.UpdateProgress != nil && newPCSG.Status.UpdateProgress.UpdateEndedAt != nil,
+				"updateTargetChanged", updateTargetChanged,
+				"enqueue", enqueue)
+			return enqueue
 		},
 		GenericFunc: func(_ event.GenericEvent) bool { return false },
 	}
@@ -301,6 +375,26 @@ func stringPointersEqual(oldValue, newValue *string) bool {
 		return oldValue == newValue
 	}
 	return *oldValue == *newValue
+}
+
+func stringPointerValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func pcsgWatchUpdateTargetGenerationHash(pcsg *grovecorev1alpha1.PodCliqueScalingGroup) string {
+	if pcsg.Status.UpdateProgress == nil {
+		return ""
+	}
+	return pcsg.Status.UpdateProgress.PodCliqueSetGenerationHash
+}
+
+func diagnosticRequestNames(requests []reconcile.Request) []string {
+	return lo.Map(requests, func(request reconcile.Request, _ int) string {
+		return request.String()
+	})
 }
 
 // mapPodGangToPCLQs maps a PodGang to one or more reconcile.Request(s) for its constituent PodClique's.

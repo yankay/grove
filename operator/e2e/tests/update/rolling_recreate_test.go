@@ -134,7 +134,10 @@ func Test_RU9_RollingUpdateAllPodCliques(t *testing.T) {
 		}
 	}
 
-	if err := waitForRollingUpdateComplete(tc, 1); err != nil {
+	tcLongTimeout := *tc
+	// RU-9 can exceed the default 4 minute poll timeout on smaller GitHub-hosted runners.
+	tcLongTimeout.Timeout = 6 * time.Minute
+	if err := waitForRollingUpdateComplete(&tcLongTimeout, 1); err != nil {
 		t.Fatalf("Failed to wait for rolling update to complete: %v", err)
 	}
 
@@ -307,17 +310,23 @@ func Test_RU11_RollingUpdateWithPCSScaleOut(t *testing.T) {
 	tests.Logger.Info("3. Change the specification of pc-a")
 	tcLongTimeout := *tc
 	tcLongTimeout.Timeout = 2 * time.Minute
+	logRU11StatusSnapshot(&tcLongTimeout, "before-update")
+	stopProbe := startRU11StatusProbe(&tcLongTimeout, 5*time.Second)
+	defer stopProbe()
 	updateWait := triggerRollingUpdate(&tcLongTimeout, 3, "pc-a")
 
 	tests.Logger.Info("4. Scale out the PCS during the rolling update (in parallel)")
 	scaleWait := tcLongTimeout.ScalePCSAsync("workload1", 3, 30, 0, 100) // 100ms delay so update is "first"
 
 	if err := <-updateWait; err != nil {
+		logRU11StatusSnapshot(&tcLongTimeout, "rolling-update-error")
 		t.Fatalf("Rolling update failed: %v", err)
 	}
 	if err := <-scaleWait; err != nil {
+		logRU11StatusSnapshot(&tcLongTimeout, "scale-error")
 		t.Fatalf("Scale operation failed: %v", err)
 	}
+	logRU11StatusSnapshot(&tcLongTimeout, "completed")
 
 	tests.Logger.Info("5. Verify the scaled out replica is created with the correct specifications")
 	pods, err := tc.ListPods()

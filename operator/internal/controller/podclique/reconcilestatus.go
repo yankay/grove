@@ -45,6 +45,18 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 	// entirely.
 	originalStatus := pclq.Status.DeepCopy()
 	patch := client.MergeFrom(pclq.DeepCopy())
+	logger.Info("RU11_DIAG PCLQ status reconcile start",
+		"pclqResourceVersion", pclq.ResourceVersion,
+		"pclqGeneration", pclq.Generation,
+		"originalReplicas", pclq.Status.Replicas,
+		"originalReadyReplicas", pclq.Status.ReadyReplicas,
+		"originalUpdatedReplicas", pclq.Status.UpdatedReplicas,
+		"currentPodTemplateHash", ptr.Deref(pclq.Status.CurrentPodTemplateHash, ""),
+		"currentPCSGenerationHash", ptr.Deref(pclq.Status.CurrentPodCliqueSetGenerationHash, ""),
+		"updateProgressPresent", pclq.Status.UpdateProgress != nil,
+		"updateTargetPodTemplateHash", pclqUpdateTargetPodTemplateHash(pclq),
+		"updateTargetGenerationHash", pclqUpdateTargetGenerationHash(pclq),
+		"updateEnded", pclq.Status.UpdateProgress != nil && pclq.Status.UpdateProgress.UpdateEndedAt != nil)
 
 	pcs, err := componentutils.GetPodCliqueSet(ctx, r.client, pclq.ObjectMeta)
 	if err != nil {
@@ -59,6 +71,15 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 	}
 
 	podCategories := k8sutils.CategorizePodsByConditionType(logger, existingPods)
+	for _, pod := range existingPods {
+		logger.Info("RU11_DIAG PCLQ observed pod",
+			"pod", client.ObjectKeyFromObject(pod),
+			"podResourceVersion", pod.ResourceVersion,
+			"podTemplateHash", pod.Labels[apicommon.LabelPodTemplateHash],
+			"podReady", isPodReady(pod),
+			"podScheduled", isPodScheduled(pod),
+			"podTerminating", !pod.DeletionTimestamp.IsZero())
+	}
 
 	// mutate PodClique Status Replicas, ReadyReplicas, ScheduleGatedReplicas and UpdatedReplicas.
 	mutateReplicas(pclq, podCategories, len(existingPods))
@@ -84,6 +105,20 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 		logger.Error(err, "failed to update selector for PodClique")
 		return ctrlcommon.ReconcileWithErrors("failed to set selector for PodClique", err)
 	}
+	logger.Info("RU11_DIAG PCLQ status reconcile calculated",
+		"pclqResourceVersion", pclq.ResourceVersion,
+		"expectedPodTemplateHash", expectedPCLQStatusPodTemplateHash(pclq),
+		"originalReplicas", originalStatus.Replicas,
+		"calculatedReplicas", pclq.Status.Replicas,
+		"originalReadyReplicas", originalStatus.ReadyReplicas,
+		"calculatedReadyReplicas", pclq.Status.ReadyReplicas,
+		"originalUpdatedReplicas", originalStatus.UpdatedReplicas,
+		"calculatedUpdatedReplicas", pclq.Status.UpdatedReplicas,
+		"currentPodTemplateHash", ptr.Deref(pclq.Status.CurrentPodTemplateHash, ""),
+		"currentPCSGenerationHash", ptr.Deref(pclq.Status.CurrentPodCliqueSetGenerationHash, ""),
+		"updateProgressPresent", pclq.Status.UpdateProgress != nil,
+		"updateTargetGenerationHash", pclqUpdateTargetGenerationHash(pclq),
+		"updateEnded", pclq.Status.UpdateProgress != nil && pclq.Status.UpdateProgress.UpdateEndedAt != nil)
 
 	// Skip the status patch when every mutate* above left status byte-identical to what the
 	// previous reconcile already persisted. The mutators above are the only code that writes
@@ -93,15 +128,71 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 	// cluster cascades into N spurious reconciles. equality.Semantic is needed (not plain
 	// ==) because the status mixes counters, pointers, conditions, and a label-selector map.
 	if equality.Semantic.DeepEqual(*originalStatus, pclq.Status) {
+		logger.Info("RU11_DIAG PCLQ status patch skipped as no-op",
+			"pclqResourceVersion", pclq.ResourceVersion,
+			"updatedReplicas", pclq.Status.UpdatedReplicas,
+			"readyReplicas", pclq.Status.ReadyReplicas,
+			"updateProgressPresent", pclq.Status.UpdateProgress != nil,
+			"updateEnded", pclq.Status.UpdateProgress != nil && pclq.Status.UpdateProgress.UpdateEndedAt != nil)
 		return ctrlcommon.ContinueReconcile()
 	}
 
 	// update the PodClique status.
+	logger.Info("RU11_DIAG PCLQ status patch start",
+		"requestResourceVersion", pclq.ResourceVersion,
+		"originalUpdatedReplicas", originalStatus.UpdatedReplicas,
+		"newUpdatedReplicas", pclq.Status.UpdatedReplicas,
+		"originalReadyReplicas", originalStatus.ReadyReplicas,
+		"newReadyReplicas", pclq.Status.ReadyReplicas,
+		"updateProgressPresent", pclq.Status.UpdateProgress != nil,
+		"updateEnded", pclq.Status.UpdateProgress != nil && pclq.Status.UpdateProgress.UpdateEndedAt != nil)
 	if err := r.client.Status().Patch(ctx, pclq, patch); err != nil {
 		logger.Error(err, "failed to update PodClique status")
 		return ctrlcommon.ReconcileWithErrors("failed to update PodClique status", err)
 	}
+	logger.Info("RU11_DIAG PCLQ status patch complete",
+		"resultResourceVersion", pclq.ResourceVersion,
+		"resultUpdatedReplicas", pclq.Status.UpdatedReplicas,
+		"resultReadyReplicas", pclq.Status.ReadyReplicas,
+		"resultCurrentPodTemplateHash", ptr.Deref(pclq.Status.CurrentPodTemplateHash, ""),
+		"resultCurrentPCSGenerationHash", ptr.Deref(pclq.Status.CurrentPodCliqueSetGenerationHash, ""),
+		"resultUpdateProgressPresent", pclq.Status.UpdateProgress != nil,
+		"resultUpdateEnded", pclq.Status.UpdateProgress != nil && pclq.Status.UpdateProgress.UpdateEndedAt != nil)
 	return ctrlcommon.ContinueReconcile()
+}
+
+func pclqUpdateTargetPodTemplateHash(pclq *grovecorev1alpha1.PodClique) string {
+	if pclq.Status.UpdateProgress == nil {
+		return ""
+	}
+	return pclq.Status.UpdateProgress.PodTemplateHash
+}
+
+func expectedPCLQStatusPodTemplateHash(pclq *grovecorev1alpha1.PodClique) string {
+	if pclq.Status.UpdateProgress != nil {
+		return pclq.Status.UpdateProgress.PodTemplateHash
+	}
+	if labelPodTemplateHash := pclq.Labels[apicommon.LabelPodTemplateHash]; labelPodTemplateHash != "" {
+		return labelPodTemplateHash
+	}
+	return ptr.Deref(pclq.Status.CurrentPodTemplateHash, "")
+}
+
+func isPodReady(pod *corev1.Pod) bool {
+	return hasPodConditionTrue(pod, corev1.PodReady)
+}
+
+func isPodScheduled(pod *corev1.Pod) bool {
+	return hasPodConditionTrue(pod, corev1.PodScheduled)
+}
+
+func hasPodConditionTrue(pod *corev1.Pod, conditionType corev1.PodConditionType) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == conditionType {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 // mutateCurrentHashes updates the PodClique's current template and generation hashes when updates are complete

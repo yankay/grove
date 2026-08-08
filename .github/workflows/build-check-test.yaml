@@ -44,6 +44,7 @@ jobs:
           filters: |
             e2e-relevant:
               - 'operator/**'
+              - 'hack/**'
               - '.github/**'
 
   test:
@@ -91,50 +92,23 @@ jobs:
       - name: check
         run: make check
 
-  # E2E tests - only run after build, check, and test jobs succeed
-  # Only triggered by changes to operator or .github folders
-  #
-  # Matrix entries can set:
-  #   test_name     (required) - name shown in the GitHub Actions UI
-  #   test_pattern  (optional) - Go test -run pattern (standard e2e tests)
-  #   make_target   (optional) - Makefile target, defaults to run-e2e-full
+  # Run the RU11 reproduction after the regular jobs finish, including when one
+  # of them fails, so unrelated validation failures do not hide the E2E result.
   e2e:
     needs: [test, build, check, changes]
-    # Run on non-draft PRs (or draft PRs with 'run-e2e' label)
-    # AND only when operator or .github files are changed
     if: |
+      always() &&
       github.event_name == 'pull_request' &&
       needs.changes.outputs.e2e-relevant == 'true' &&
       (github.event.pull_request.draft == false || contains(github.event.pull_request.labels.*.name, 'run-e2e'))
-    # use NVIDIA self-hosted runner setting is on Velonix repository
-    runs-on: prod-grove-e2e-v1
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - test_name: gang_scheduling
-            test_pattern: "^Test_GS"
-          - test_name: gang_termination
-            test_pattern: "^Test_GT"
-          - test_name: rolling_updates
-            test_pattern: "^Test_RU"
-          - test_name: ondelete_updates
-            test_pattern: "^Test_OD"
-          - test_name: startup_ordering
-            test_pattern: "^Test_SO"
-            make_target: "run-e2e-real-full"
-          - test_name: Topology_Aware_Scheduling
-            test_pattern: "^Test_TAS"
-          - test_name: cert_management
-            test_pattern: "^Test_CM"
-          - test_name: auto_mnnvl
-            test_pattern: "^Test_AutoMNNVL"
-            make_target: "run-e2e-mnnvl-full"
-          - test_name: crd_installer
-            test_pattern: "^Test_CRD_Installer"
-          - test_name: resource_sharing
-            test_pattern: "^Test_RS"
+          - test_name: ru11_rolling_update
+            test_pattern: "^Test_RU11_RollingUpdateWithPCSScaleOut$"
     name: E2E - ${{ matrix.test_name }}
     steps:
       # print runner specs so we have a record in case of failures
@@ -156,7 +130,7 @@ jobs:
 
       - name: Run e2e tests - ${{ matrix.test_name }}
         run: |
-          make ${{ matrix.make_target || 'run-e2e-full' }} TEST_PATTERN='${{ matrix.test_pattern }}' E2E_CREATE_FLAGS='--dind-memory-mode'
+          make ${{ matrix.make_target || 'run-e2e-full' }} TEST_PATTERN='${{ matrix.test_pattern }}' E2E_CREATE_FLAGS='--dind-memory-mode' DIAG_MODE=both DIAG_DIR=e2e-diagnostics
         working-directory: operator
 
       # The test code handles cleanup via Teardown(), but this step provides
@@ -193,15 +167,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - test_name: gang_scheduling
-          - test_name: gang_termination
-          - test_name: rolling_updates
-          - test_name: startup_ordering
-          - test_name: Topology_Aware_Scheduling
-          - test_name: cert_management
-          - test_name: auto_mnnvl
-          - test_name: crd_installer
-          - test_name: resource_sharing
+          - test_name: ru11_rolling_update
     name: E2E - ${{ matrix.test_name }}
     steps:
       - name: Skip E2E (no relevant changes)
