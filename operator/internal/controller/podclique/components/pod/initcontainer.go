@@ -35,12 +35,6 @@ const (
 	// envVarInitContainerImage stores the environment variable which is read to find the image for the init-container.
 	// The environment variable should only store the registry and repository of the init-container. It should not contain any tag.
 	envVarInitContainerImage string = "GROVE_INIT_CONTAINER_IMAGE"
-	// initContainerName is the name of the init container.
-	initContainerName = "grove-initc"
-	// serviceAccountTokenSecretVolumeName is the name of the volume that mounts the service account token secret.
-	serviceAccountTokenSecretVolumeName = "sa-token-secret-vol"
-	// podInfoVolumeName is the name of the downwardAPI volume that passes the pod information to the init container.
-	podInfoVolumeName = "pod-info-vol"
 	// volumeMountPathServiceAccount is the base path where token and CA.cert for the service account will be placed.
 	volumeMountPathServiceAccount = "/var/run/secrets/kubernetes.io/serviceaccount"
 )
@@ -55,7 +49,7 @@ func configurePodInitContainer(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovec
 // addServiceAccountTokenSecretVolume adds a volume that mounts the service account token secret
 func addServiceAccountTokenSecretVolume(pcsName string, pod *corev1.Pod) {
 	saTokenSecretVol := corev1.Volume{
-		Name: serviceAccountTokenSecretVolumeName,
+		Name: constants.StartupServiceAccountTokenVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{
 				SecretName:  apicommon.GenerateInitContainerSATokenSecretName(pcsName),
@@ -69,7 +63,7 @@ func addServiceAccountTokenSecretVolume(pcsName string, pod *corev1.Pod) {
 // addPodInfoVolume adds a downwardAPI volume that exposes pod metadata to the init container
 func addPodInfoVolume(pod *corev1.Pod) {
 	podInfoVol := corev1.Volume{
-		Name: podInfoVolumeName,
+		Name: constants.StartupPodInfoVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			DownwardAPI: &corev1.DownwardAPIVolumeSource{
 				Items: []corev1.DownwardAPIVolumeFile{
@@ -104,17 +98,17 @@ func addInitContainer(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1alph
 	}
 
 	pod.Spec.InitContainers = append(pod.Spec.InitContainers, corev1.Container{
-		Name:  initContainerName,
+		Name:  constants.StartupInitContainerName,
 		Image: fmt.Sprintf("%s:%s", image, groveversion.New().GitVersion),
 		Args:  args,
 		VolumeMounts: []corev1.VolumeMount{
 			{
-				Name:      podInfoVolumeName,
+				Name:      constants.StartupPodInfoVolumeName,
 				ReadOnly:  true,
 				MountPath: constants.VolumeMountPathPodInfo,
 			},
 			{
-				Name:      serviceAccountTokenSecretVolumeName,
+				Name:      constants.StartupServiceAccountTokenVolumeName,
 				ReadOnly:  true,
 				MountPath: volumeMountPathServiceAccount,
 			},

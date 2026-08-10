@@ -80,6 +80,9 @@ func (h *Handler) ValidateCreate(ctx context.Context, obj runtime.Object) (admis
 	warnings = append(warnings, topologyWarnings...)
 	allErrs = append(allErrs, errs...)
 	allErrs = append(allErrs, v.validateGeneratedResourceClaimNames()...)
+	allErrs = append(allErrs, v.validatePodResourceClaimAliasCollisions(h.networkConfig.AutoMNNVLEnabled)...)
+	allErrs = append(allErrs, v.validateInjectedPodSpecNames()...)
+	allErrs = append(allErrs, v.validateGeneratedObjectNameCollisions()...)
 
 	// Validate MNNVL annotations on PCS metadata and spec (clique templates)
 	allErrs = append(allErrs, mnnvl.ValidatePCSOnCreate(pcs, h.networkConfig.AutoMNNVLEnabled)...)
@@ -107,6 +110,9 @@ func (h *Handler) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Obj
 	v := newPCSValidator(newPCS, admissionv1.Update, h.tasConfig, h.schedulerConfig, h.client, h.schedRegistry)
 	warnings, errs := v.validate()
 	errs = append(errs, v.validateGeneratedResourceClaimNamesOnUpdate(oldPCS)...)
+	errs = append(errs, v.validatePodResourceClaimAliasCollisionsOnUpdate(oldPCS, h.networkConfig.AutoMNNVLEnabled)...)
+	errs = append(errs, v.validateInjectedPodSpecNamesOnUpdate(oldPCS)...)
+	errs = append(errs, v.validateGeneratedObjectNameCollisionsOnUpdate(oldPCS)...)
 
 	// Validate MNNVL annotation immutability on PCS metadata and spec (clique templates)
 	errs = append(errs, mnnvl.ValidatePCSOnUpdate(oldPCS, newPCS)...)

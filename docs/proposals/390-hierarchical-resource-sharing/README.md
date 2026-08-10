@@ -961,11 +961,20 @@ for every sharing level and scope. For indexed names it uses the largest index r
 configured replica count or `scaleConfig.maxReplicas`, so workloads are rejected before a later
 scale-out would produce an invalid Pod.
 
-Generated ResourceClaim names must also be unique within the PCS namespace and within each Pod's
-`spec.resourceClaims` list. Because owner names and `rctName` values may contain hyphens, distinct
-sharing levels can otherwise flatten to the same generated name. Admission validation rejects any
-pair of sharing entries whose generated names intersect over their configured replica ranges,
-including autoscaling maxima.
+Generated ResourceClaim names must also be unique within the Kubernetes namespace and within each
+Pod's `spec.resourceClaims` list. Because owner names and `rctName` values may contain hyphens,
+distinct sharing levels can otherwise flatten to the same generated name. Admission validation
+rejects any pair of sharing entries in one PodCliqueSet whose generated names intersect over their
+configured replica ranges, including autoscaling maxima.
+
+Admission also checks the final `spec.resourceClaims` alias set for every affected PodClique after
+applying PCS and PCSG filters. A user-provided alias must not collide with an alias injected by
+resource sharing or with the reserved Auto-MNNVL alias `mnnvl-claim`.
+
+Two different PodCliqueSets can still theoretically flatten to the same ResourceClaim name. An
+ownership conflict prevents either controller from taking over the other's claim, but admission
+cannot eliminate the concurrent-create race without changing the naming format. A collision-free
+cross-PodCliqueSet format requires a separate compatibility and migration design.
 
 **Concrete example** — PCS `disagg` (replica 0), PCSG `sgx` (replicas: 2), cliques in PCSG:
 `pca` (replicas: 3), `pcb` (replicas: 2); standalone PCLQ: `metrics` (replicas: 2).
