@@ -937,11 +937,10 @@ In this example:
 Each RC name is derived from the owning resource's Kubernetes name, a scope segment, and the
 referenced template name (`rctName`). For `PerReplica` scope the segment is the replica index
 (e.g. `0`, `1`). For `AllReplicas` scope the literal keyword `all` takes the place of the replica
-index, ensuring that an AllReplicas RC name can never collide with a PerReplica RC name.
+index, distinguishing AllReplicas and PerReplica names that share the same owner prefix.
 The `all` sentinel is intentional: omitting it would make names ambiguous when the `rctName`
 starts with a digit (e.g. `disagg-0-pool` could be an AllReplicas RC for rctName `0-pool` or a
-PerReplica RC at index `0` for rctName `pool`). Using `all` keeps parsing unambiguous and
-collision-free.
+PerReplica RC at index `0` for rctName `pool`).
 
 | Level + Scope | RC Name Format |
 |---|---|
@@ -959,7 +958,14 @@ The generated ResourceClaim name is also used as the local claim name in
 DNS label, so the complete generated name must contain only lowercase alphanumeric characters or
 `-` and must not exceed 63 characters. The validating admission webhook checks the complete name
 for every sharing level and scope. For indexed names it uses the largest index reachable from the
-configured replica count or `scaleConfig.maxReplicas`.
+configured replica count or `scaleConfig.maxReplicas`, so workloads are rejected before a later
+scale-out would produce an invalid Pod.
+
+Generated ResourceClaim names must also be unique within the PCS namespace and within each Pod's
+`spec.resourceClaims` list. Because owner names and `rctName` values may contain hyphens, distinct
+sharing levels can otherwise flatten to the same generated name. Admission validation rejects any
+pair of sharing entries whose generated names intersect over their configured replica ranges,
+including autoscaling maxima.
 
 **Concrete example** — PCS `disagg` (replica 0), PCSG `sgx` (replicas: 2), cliques in PCSG:
 `pca` (replicas: 3), `pcb` (replicas: 2); standalone PCLQ: `metrics` (replicas: 2).

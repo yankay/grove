@@ -348,6 +348,11 @@ CD names include the group name and use the form `{pcs-name}-{replica-index}-{gr
 
 Group names are scoped to the PCS — different PCS resources can use the same group names without conflict (the PCS name provides uniqueness).
 
+The complete CD name is also stored in the `app.kubernetes.io/name` label. The validating admission
+webhook therefore checks that `{pcs-name}-{replica-index}-{group-name}` is a valid Kubernetes label
+value and does not exceed 63 bytes. Validation uses the largest currently configured PCS replica
+index so a scale-out cannot create an invalid ComputeDomain label.
+
 #### Reconciliation Ordering
 
 ComputeDomain resources must be synced **before** creating PCLQs and PCSGs, ensuring the CD exists before pods that reference its RCT are created. If CD creation fails, the sync stops and requeues for retry.
@@ -453,11 +458,12 @@ In the opt-in model, the mutating webhook **does not** add any MNNVL-related ann
 The validating webhook enforces:
 
 - **Value validation (`mnnvl-group`):** Must be `"none"` (opt-out) or a valid Kubernetes name component (lowercase alphanumeric or dashes, starting and ending with alphanumeric, max 63 chars). Invalid values are rejected.
+- **Generated name validation:** For effective groups used by GPU PodCliques, the complete ComputeDomain name must be a valid value for the generated `app.kubernetes.io/name` label.
 - **Feature disabled:** If the feature is off (`autoMNNVLEnabled: false`), reject any PCS that has `grove.io/mnnvl-group` at any level.
 
 #### Validating Webhook (on Update)
 
-`grove.io/mnnvl-group` is **immutable** after PCS creation at all levels (PCS, PCSG, PCLQ). Any attempt to add, modify, or remove the annotation is rejected.
+`grove.io/mnnvl-group` is **immutable** after PCS creation at all levels (PCS, PCSG, PCLQ). Any attempt to add, modify, or remove the annotation is rejected. Updates that increase the PCS replica count are also rejected when the new maximum replica index would make a generated ComputeDomain label invalid. Existing invalid objects may still perform non-scaling metadata or cleanup updates.
 
 ### Backward Compatibility
 

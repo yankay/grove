@@ -110,6 +110,7 @@ func (h *Handler) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Obj
 
 	// Validate MNNVL annotation immutability on PCS metadata and spec (clique templates)
 	errs = append(errs, mnnvl.ValidatePCSOnUpdate(oldPCS, newPCS)...)
+	errs = append(errs, mnnvl.ValidateComputeDomainNamesOnUpdate(oldPCS, newPCS, h.networkConfig.AutoMNNVLEnabled)...)
 
 	// Scheduler-backend-specific validation
 	if err := h.validatePodCliqueSetWithBackend(ctx, newPCS); err != nil {
