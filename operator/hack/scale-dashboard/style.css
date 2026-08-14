@@ -211,11 +211,27 @@ select {
   font-weight: 700;
 }
 
-.legend span {
+.legend span,
+.legend-toggle {
   align-items: center;
   display: inline-flex;
   gap: 6px;
   white-space: nowrap;
+}
+
+.legend-toggle {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+.legend-toggle[aria-pressed="false"] {
+  opacity: 0.48;
+  text-decoration: line-through;
 }
 
 .legend i {

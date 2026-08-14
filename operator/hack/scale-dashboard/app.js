@@ -47,6 +47,7 @@ const state = {
   testName: "",
   startDate: "",
   endDate: "",
+  hiddenTests: new Set(),
 };
 
 const els = {
@@ -182,19 +183,32 @@ function render() {
 }
 
 function drawOverviewChart(runs) {
-  const rows = runs
+  const allRows = runs
     .map((run) => ({ run, value: run.totalSeconds }))
     .filter((item) => Number.isFinite(item.value))
     .sort((a, b) => a.run.date - b.run.date);
-  const testNames = unique(rows.map((row) => row.run.testName)).sort();
-  const colors = testColorMap(testNames);
+  const testNames = unique(allRows.map((row) => row.run.testName)).sort();
+  const colors = testColorMap(unique(state.runs.map((run) => run.testName)).sort());
+  const rows = allRows.filter((row) => !state.hiddenTests.has(row.run.testName));
 
-  renderLegend(els.overviewLegend, testNames.map((name) => ({ name, color: colors.get(name) })));
+  renderLegend(els.overviewLegend, testNames.map((name) => ({
+    name,
+    color: colors.get(name),
+    active: !state.hiddenTests.has(name),
+    onClick: () => {
+      if (!state.hiddenTests.delete(name)) state.hiddenTests.add(name);
+      render();
+    },
+  })));
 
   const svg = els.overviewChart;
   const dims = prepareChart(svg, { top: 20, right: 28, bottom: 42, left: 58 });
-  if (rows.length === 0) {
+  if (allRows.length === 0) {
     drawEmpty(svg, "No total runtime points");
+    return;
+  }
+  if (rows.length === 0) {
+    drawEmpty(svg, "Select a test series");
     return;
   }
 
@@ -210,7 +224,7 @@ function drawOverviewChart(runs) {
 
   drawGrid(svg, dims, yTop);
 
-  for (const testName of testNames) {
+  for (const testName of testNames.filter((name) => !state.hiddenTests.has(name))) {
     const seriesRows = rows.filter((row) => row.run.testName === testName);
     const color = colors.get(testName);
     const points = seriesRows.map((row) => [
@@ -702,7 +716,13 @@ function renderSummary(target, items) {
 function renderLegend(target, items) {
   target.replaceChildren(
     ...items.map((item) => {
-      const entry = document.createElement("span");
+      const entry = document.createElement(item.onClick ? "button" : "span");
+      if (item.onClick) {
+        entry.className = "legend-toggle";
+        entry.type = "button";
+        entry.setAttribute("aria-pressed", String(item.active));
+        entry.addEventListener("click", item.onClick);
+      }
       const swatch = document.createElement("i");
       swatch.style.background = item.color;
       entry.append(swatch, document.createTextNode(item.name));
