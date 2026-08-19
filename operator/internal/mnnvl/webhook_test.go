@@ -15,11 +15,13 @@
 package mnnvl
 
 import (
+	"strings"
 	"testing"
 
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidatePCSOnCreate_Metadata(t *testing.T) {
@@ -511,4 +513,165 @@ func TestValidatePCSOnCreate_NonGPUCliqueWithMNNVL(t *testing.T) {
 			assert.Empty(t, errs, "MNNVL annotations on non-GPU cliques should be accepted")
 		})
 	}
+}
+
+func TestValidatePCSOnCreate_ComputeDomainName(t *testing.T) {
+	tests := []struct {
+		description   string
+		pcsName       string
+		groupName     string
+		gpu           bool
+		expectError   bool
+		expectedField string
+	}{
+		{
+			description: "63-character label value is accepted",
+			pcsName:     strings.Repeat("p", 40),
+			groupName:   strings.Repeat("g", 20),
+			gpu:         true,
+		},
+		{
+			description:   "64-character label value is rejected",
+			pcsName:       strings.Repeat("p", 40),
+			groupName:     strings.Repeat("g", 21),
+			gpu:           true,
+			expectError:   true,
+			expectedField: "metadata.annotations.grove.io/mnnvl-group",
+		},
+		{
+			description: "non-GPU clique does not create a ComputeDomain",
+			pcsName:     strings.Repeat("p", 40),
+			groupName:   strings.Repeat("g", 21),
+			gpu:         false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			var pcs *grovecorev1alpha1.PodCliqueSet
+			if tc.gpu {
+				pcs = createPCSWithGPU(map[string]string{AnnotationMNNVLGroup: tc.groupName})
+			} else {
+				pcs = createPCSWithNonGPUCliqueAnnotations(nil)
+				pcs.Annotations = map[string]string{AnnotationMNNVLGroup: tc.groupName}
+			}
+			pcs.Name = tc.pcsName
+
+			errs := ValidatePCSOnCreate(pcs, true)
+			if tc.expectError {
+				require.Len(t, errs, 1)
+				assert.Equal(t, tc.expectedField, errs[0].Field)
+				assert.Contains(t, errs[0].Detail, "must be no more than 63 bytes")
+				return
+			}
+			assert.Empty(t, errs)
+		})
+	}
+}
+
+func TestValidatePCSOnCreate_ComputeDomainNameReplicaBoundary(t *testing.T) {
+	tests := []struct {
+		description string
+		replicas    int32
+		groupLength int
+		expectError bool
+		expectedIdx string
+	}{
+		{description: "index 9 is valid", replicas: 10, groupLength: 20},
+		{description: "index 10 is rejected", replicas: 11, groupLength: 20, expectError: true, expectedIdx: "-10-"},
+		{description: "index 99 is valid", replicas: 100, groupLength: 19},
+		{description: "index 100 is rejected", replicas: 101, groupLength: 19, expectError: true, expectedIdx: "-100-"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			pcs := createPCSWithGPU(map[string]string{
+				AnnotationMNNVLGroup: strings.Repeat("g", tc.groupLength),
+			})
+			pcs.Name = strings.Repeat("p", 40)
+			pcs.Spec.Replicas = tc.replicas
+
+			errs := ValidatePCSOnCreate(pcs, true)
+			if tc.expectError {
+				require.Len(t, errs, 1)
+				assert.Contains(t, errs[0].BadValue.(string), tc.expectedIdx)
+				return
+			}
+			assert.Empty(t, errs)
+		})
+	}
+}
+
+func TestValidatePCSOnCreate_ComputeDomainNameSourcePath(t *testing.T) {
+	tests := []struct {
+		description   string
+		configure     func(*grovecorev1alpha1.PodCliqueSet)
+		expectedField string
+	}{
+		{
+			description: "PCSG annotation",
+			configure: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.PodCliqueScalingGroupConfigs = []grovecorev1alpha1.PodCliqueScalingGroupConfig{{
+					Name:        "group",
+					CliqueNames: []string{"worker"},
+					Annotations: map[string]string{AnnotationMNNVLGroup: strings.Repeat("g", 21)},
+				}}
+			},
+			expectedField: "spec.template.podCliqueScalingGroups[0].annotations.grove.io/mnnvl-group",
+		},
+		{
+			description: "PCLQ annotation",
+			configure: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.Cliques[0].Annotations = map[string]string{
+					AnnotationMNNVLGroup: strings.Repeat("g", 21),
+				}
+			},
+			expectedField: "spec.template.cliques[0].annotations.grove.io/mnnvl-group",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			pcs := createPCSWithGPU(nil)
+			pcs.Name = strings.Repeat("p", 40)
+			tc.configure(pcs)
+
+			errs := ValidatePCSOnCreate(pcs, true)
+			require.Len(t, errs, 1)
+			assert.Equal(t, tc.expectedField, errs[0].Field)
+		})
+	}
+}
+
+func TestValidateComputeDomainNamesOnUpdate(t *testing.T) {
+	oldPCS := createPCSWithGPU(map[string]string{
+		AnnotationMNNVLGroup: strings.Repeat("g", 21),
+	})
+	oldPCS.Name = strings.Repeat("p", 40)
+	oldPCS.Spec.Replicas = 2
+
+	t.Run("unchanged legacy violation is allowed", func(t *testing.T) {
+		newPCS := oldPCS.DeepCopy()
+		assert.Empty(t, ValidateComputeDomainNamesOnUpdate(oldPCS, newPCS, true))
+	})
+
+	t.Run("scale out with legacy violation is rejected", func(t *testing.T) {
+		newPCS := oldPCS.DeepCopy()
+		newPCS.Spec.Replicas++
+		errs := ValidateComputeDomainNamesOnUpdate(oldPCS, newPCS, true)
+		require.Len(t, errs, 1)
+		assert.Equal(t, "metadata.annotations.grove.io/mnnvl-group", errs[0].Field)
+	})
+
+	t.Run("scale in with legacy violation is allowed", func(t *testing.T) {
+		newPCS := oldPCS.DeepCopy()
+		newPCS.Spec.Replicas--
+		assert.Empty(t, ValidateComputeDomainNamesOnUpdate(oldPCS, newPCS, true))
+	})
+
+	t.Run("validation is skipped when MNNVL is disabled", func(t *testing.T) {
+		newPCS := oldPCS.DeepCopy()
+		newPCS.Spec.Replicas++
+		assert.Empty(t, ValidateComputeDomainNamesOnUpdate(oldPCS, newPCS, false))
+	})
 }

@@ -29,6 +29,12 @@ const (
 	ComponentSyncRetryInterval = 5 * time.Second
 	// EnvVarServiceAccountName is the name of the environment variable that stores the serviceAccountName of the operator pod.
 	EnvVarServiceAccountName = "GROVE_OPERATOR_SERVICE_ACCOUNT_NAME"
+	// StartupInitContainerName is reserved for Grove's startup-order init container.
+	StartupInitContainerName = "grove-initc"
+	// StartupServiceAccountTokenVolumeName is reserved for the startup-order service account token volume.
+	StartupServiceAccountTokenVolumeName = "sa-token-secret-vol"
+	// StartupPodInfoVolumeName is reserved for the startup-order downward API volume.
+	StartupPodInfoVolumeName = "pod-info-vol"
 )
 
 // constants used for pod lifecycle events
