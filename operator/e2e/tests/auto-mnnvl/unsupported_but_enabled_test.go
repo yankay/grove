@@ -18,6 +18,7 @@ package automnnvl
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -64,7 +65,7 @@ func Test_AutoMNNVL_UnsupportedButEnabled(t *testing.T) {
 // testOperatorExitsWithoutCDCRD verifies that the operator fails preflight
 // when MNNVL is enabled but the ComputeDomain CRD is missing.
 func testOperatorExitsWithoutCDCRD(t *testing.T, tc *testctx.TestContext) {
-	pod, err := tc.WaitForFailedPod(groveOperatorNamespace, setup.OperatorPodLabelSelector)
+	pod, err := waitForFailedOperatorPod(tc)
 	require.NoError(t, err, "Failed to find grove-operator pod")
 
 	hasTerminated := false
@@ -75,41 +76,12 @@ func testOperatorExitsWithoutCDCRD(t *testing.T, tc *testctx.TestContext) {
 		}
 	}
 	assert.True(t, hasTerminated, "Operator pod should terminate on preflight failure")
-
-	// Verify logs show preflight failure due to missing CRD.
-	// Check both current and previous container logs because the operator
-	// crashes on preflight failure and the error message may only appear
-	// in the previous (terminated) container's logs.
-	fetchLogs := waiter.FetchFunc[[]byte](func(ctx context.Context) ([]byte, error) {
-		var allLogs []byte
-		for _, previous := range []bool{false, true} {
-			logs, logErr := tc.Client.GetLogs(groveOperatorNamespace, pod.Name, &corev1.PodLogOptions{
-				Previous: previous,
-			}).DoRaw(ctx)
-			if logErr == nil {
-				allLogs = append(allLogs, logs...)
-			}
-		}
-		return allLogs, nil
-	})
-	containsPreflightError := waiter.Predicate[[]byte](func(logs []byte) bool {
-		logText := string(logs)
-		return strings.Contains(logText, "MNNVL preflight check failed") &&
-			strings.Contains(logText, "ComputeDomain CRD")
-	})
-	w := waiter.New[[]byte]().
-		WithTimeout(defaultPollTimeout).
-		WithInterval(defaultPollInterval)
-	err = w.WaitUntil(tc.Ctx, fetchLogs, containsPreflightError)
-	assert.NoError(t, err, "Operator logs should show preflight failure due to missing CRD")
 }
 
-// waitForFailedOperatorPod polls until it finds an operator pod that is NOT
-// Ready and has terminated or restarted. During a rolling deployment
-// (maxUnavailable=0) both the old healthy pod and the new crashing pod coexist.
-// The old pod may have RestartCount > 0 from cert-refresh restarts, so we
-// filter by !Ready to ensure we return the actually-crashing pod whose logs
-// contain the preflight failure.
+// waitForFailedOperatorPod polls all operator pods until it finds the
+// non-terminating pod whose current or previous logs contain the expected
+// preflight failure. A rolling deployment can leave an old restarted pod
+// NotReady while it terminates, so pod state alone is not sufficient.
 func waitForFailedOperatorPod(tc *testctx.TestContext) (*corev1.Pod, error) {
 	w := waiter.New[*corev1.Pod]().
 		WithTimeout(defaultPollTimeout).
@@ -117,25 +89,54 @@ func waitForFailedOperatorPod(tc *testctx.TestContext) (*corev1.Pod, error) {
 	fetchFailedPod := waiter.FetchFunc[*corev1.Pod](func(ctx context.Context) (*corev1.Pod, error) {
 		var podList corev1.PodList
 		listErr := tc.Client.List(ctx, &podList, client.InNamespace(groveOperatorNamespace), setup.OperatorPodLabels)
-		pods := &podList
-		if listErr != nil || len(pods.Items) == 0 {
-			return nil, nil
+		if listErr != nil {
+			return nil, fmt.Errorf("list grove operator pods: %w", listErr)
 		}
-		for i := range pods.Items {
-			pod := &pods.Items[i]
-			if kubeutils.IsPodReady(pod) {
+
+		for i := range podList.Items {
+			pod := &podList.Items[i]
+			if !isFailedOperatorPodCandidate(pod) {
 				continue
 			}
-			for _, status := range pod.Status.ContainerStatuses {
-				if status.State.Terminated != nil ||
-					status.LastTerminationState.Terminated != nil ||
-					status.RestartCount > 0 {
-					return pod, nil
-				}
+			if containsMNNVLPreflightFailure(fetchOperatorLogs(ctx, tc, pod.Name)) {
+				return pod, nil
 			}
 		}
 		return nil, nil
 	})
 	operatorPod, err := w.WaitFor(tc.Ctx, fetchFailedPod, waiter.IsNotZero[*corev1.Pod])
 	return operatorPod, err
+}
+
+func isFailedOperatorPodCandidate(pod *corev1.Pod) bool {
+	if pod.DeletionTimestamp != nil || kubeutils.IsPodReady(pod) {
+		return false
+	}
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.State.Terminated != nil ||
+			status.LastTerminationState.Terminated != nil ||
+			status.RestartCount > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func fetchOperatorLogs(ctx context.Context, tc *testctx.TestContext, podName string) []byte {
+	var allLogs []byte
+	for _, previous := range []bool{false, true} {
+		logs, err := tc.Client.GetLogs(groveOperatorNamespace, podName, &corev1.PodLogOptions{
+			Previous: previous,
+		}).DoRaw(ctx)
+		if err == nil {
+			allLogs = append(allLogs, logs...)
+		}
+	}
+	return allLogs
+}
+
+func containsMNNVLPreflightFailure(logs []byte) bool {
+	logText := string(logs)
+	return strings.Contains(logText, "MNNVL preflight check failed") &&
+		strings.Contains(logText, "ComputeDomain CRD")
 }
