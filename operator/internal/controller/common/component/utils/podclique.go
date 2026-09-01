@@ -94,56 +94,40 @@ func GroupPCLQsByPCSReplicaIndex(pclqs []grovecorev1alpha1.PodClique) (map[int][
 	return grouped, nil
 }
 
-// InitialScheduleGrace is the small window after PodCliqueScalingGroup creation in which a flipped
-// status condition is treated as the first-time-set rather than a transition from a different state.
-// WasPCSGEverHealthy uses it to absorb the gap between the apiserver setting CreationTimestamp and
-// the first reconcile that mutates the MinAvailableBreached condition.
-const InitialScheduleGrace = 5 * time.Second
-
-// WasPCLQEverScheduled reports whether the PodClique has ever reached the PodCliqueScheduled=True
-// state. It reads Status.LastScheduled, a durable marker stamped in the same status reconcile that
-// first sets PodCliqueScheduled to True and never reset once set. A nil value means no reconcile has
-// yet observed the PodClique meet its scheduled count.
-func WasPCLQEverScheduled(pclq *grovecorev1alpha1.PodClique) bool {
-	return pclq.Status.LastScheduled != nil
-}
-
-// WasPCSGEverHealthy reports whether the PodCliqueScalingGroup has ever reached the
-// MinAvailableBreached=False state since creation. Mirrors WasPCLQEverScheduled but reads the
-// PCSG's own MinAvailableBreached condition (PCSGs have no PodCliqueScheduled equivalent).
-// Used to gate gang-termination so an initial-startup PCSG that has not yet stabilized is left
-// alone — only regressions from a previously-healthy state get recycled.
-// Shares the observed-transitions-only limitation documented on WasPCLQEverScheduled.
-func WasPCSGEverHealthy(pcsg *grovecorev1alpha1.PodCliqueScalingGroup) bool {
-	cond := meta.FindStatusCondition(pcsg.Status.Conditions, constants.ConditionTypeMinAvailableBreached)
-	if cond == nil {
+// IsMinAvailableBreachArmed reports whether the current generation has observed a healthy state.
+// Initial scheduling, idle, and update states deliberately reset the latch.
+func IsMinAvailableBreachArmed(conditions []metav1.Condition, generation int64) bool {
+	cond := meta.FindStatusCondition(conditions, constants.ConditionTypeMinAvailableBreached)
+	if cond == nil || cond.ObservedGeneration != generation {
 		return false
 	}
-	if cond.Status == metav1.ConditionFalse {
+	switch cond.Reason {
+	case constants.ConditionReasonSufficientReadyPods,
+		constants.ConditionReasonScheduledReplicasBelowMinAvailable,
+		constants.ConditionReasonInsufficientReadyPods,
+		constants.ConditionReasonSufficientAvailablePCSGReplicas,
+		constants.ConditionReasonInsufficientAvailablePCSGReplicas:
 		return true
+	default:
+		return false
 	}
-	return cond.LastTransitionTime.After(pcsg.CreationTimestamp.Add(InitialScheduleGrace))
 }
 
 // GetMinAvailableBreachedPCLQInfo filters PodCliques that have grovecorev1alpha1.ConditionTypeMinAvailableBreached set to true.
 // For each such PodClique it returns the name of the PodClique a duration to wait for before terminationDelay is breached.
-//
-// PodCliques that have never been scheduled (per WasPCLQEverScheduled) are excluded — the
-// MinAvailableBreached condition is still True on them (operators can observe the state) but
-// gang-termination would only churn-loop Pending pods against a cluster that already cannot
-// schedule them. Recycling makes sense only after a workload has been healthy and then regressed.
 func GetMinAvailableBreachedPCLQInfo(pclqs []grovecorev1alpha1.PodClique, terminationDelay time.Duration, since time.Time) ([]string, time.Duration) {
 	pclqCandidateNames := make([]string, 0, len(pclqs))
 	waitForDurations := make([]time.Duration, 0, len(pclqs))
 	for _, pclq := range pclqs {
+		if pclq.Spec.Replicas == 0 {
+			continue
+		}
 		cond := meta.FindStatusCondition(pclq.Status.Conditions, constants.ConditionTypeMinAvailableBreached)
 		if cond == nil {
 			continue
 		}
-		if cond.Status != metav1.ConditionTrue {
-			continue
-		}
-		if !WasPCLQEverScheduled(&pclq) {
+		if cond.Status != metav1.ConditionTrue ||
+			!IsMinAvailableBreachArmed(pclq.Status.Conditions, pclq.Generation) {
 			continue
 		}
 		pclqCandidateNames = append(pclqCandidateNames, pclq.Name)

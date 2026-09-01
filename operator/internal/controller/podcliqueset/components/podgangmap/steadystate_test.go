@@ -431,9 +431,8 @@ func TestReconcileStandaloneCliqueCountAcrossAnchors(t *testing.T) {
 	}
 }
 
-// TestRemoveEmptyEntries verifies removeEmptyEntries keeps a current-generation empty ScaleOut entry
-// only while a current-generation anchor survives, drops the ScaleOut once its anchor drains to empty
-// and is removed, and never keeps an empty ScaleOut of an older generation.
+// TestRemoveEmptyEntries verifies the current-generation base anchor and ScaleOut entry remain as
+// stable wake slots while other empty entries are removed.
 func TestRemoveEmptyEntries(t *testing.T) {
 	olderGenerationScaleOut := testutils.NewPodGangEntryBuilder("hash0", "099").
 		WithRole(grovecorev1alpha1.PodGangEntryRoleScaleOut).
@@ -456,12 +455,15 @@ func TestRemoveEmptyEntries(t *testing.T) {
 			},
 		},
 		{
-			name: "empty anchor is removed and its empty ScaleOut is removed with it",
+			name: "empty base anchor and ScaleOut are retained for wake",
 			entries: []grovecorev1alpha1.PodGangEntry{
 				anchorEntry(nil, map[string][]int32{testPCSGName: {}}),
 				scaleOutEntry(nil),
 			},
-			wantRoles: []grovecorev1alpha1.PodGangEntryRole{},
+			wantRoles: []grovecorev1alpha1.PodGangEntryRole{
+				grovecorev1alpha1.PodGangEntryRoleAnchor,
+				grovecorev1alpha1.PodGangEntryRoleScaleOut,
+			},
 		},
 		{
 			name: "empty tail is removed while a non-empty anchor and its ScaleOut remain",
