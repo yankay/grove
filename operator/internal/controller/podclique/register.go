@@ -16,7 +16,7 @@ package podclique
 
 import (
 	"context"
-	"maps"
+	"reflect"
 	"strings"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
@@ -24,6 +24,7 @@ import (
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/controller/podclique/expectations"
 	grovectrlutils "github.com/ai-dynamo/grove/operator/internal/controller/utils"
+	"github.com/ai-dynamo/grove/operator/internal/scheduler"
 	"github.com/ai-dynamo/grove/operator/internal/utils"
 	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
@@ -52,7 +53,7 @@ const (
 
 // RegisterWithManager registers the PodClique controller with the given controller manager.
 func (r *Reconciler) RegisterWithManager(mgr ctrl.Manager) error {
-	return builder.ControllerManagedBy(mgr).
+	b := builder.ControllerManagedBy(mgr).
 		Named(controllerName).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: *r.config.ConcurrentSyncs,
@@ -69,10 +70,18 @@ func (r *Reconciler) RegisterWithManager(mgr ctrl.Manager) error {
 			),
 		).
 		Owns(&corev1.Pod{}, builder.WithPredicates(r.podPredicate())).
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(r.mapSchedulingDependencyToPCLQs(nil)),
+			builder.WithPredicates(podSchedulingPredicate())).
 		Watches(
 			&grovecorev1alpha1.PodCliqueSet{},
 			handler.EnqueueRequestsFromMapFunc(mapPodCliqueSetToPCLQs()),
 			builder.WithPredicates(podCliqueSetPredicate()),
+		).
+		Watches(
+			&grovecorev1alpha1.PodCliqueSet{},
+			handler.EnqueueRequestsFromMapFunc(r.mapGangRecoveryToPCLQs()),
+			builder.WithPredicates(gangRecoveryPredicate()),
 		).
 		Watches(
 			&grovecorev1alpha1.PodCliqueScalingGroup{},
@@ -81,15 +90,21 @@ func (r *Reconciler) RegisterWithManager(mgr ctrl.Manager) error {
 		).
 		Watches(
 			&groveschedulerv1alpha1.PodGang{},
-			handler.EnqueueRequestsFromMapFunc(mapPodGangToPCLQs()),
+			handler.EnqueueRequestsFromMapFunc(r.mapSchedulingDependencyToPCLQs(mapPodGangToPCLQs())),
 			builder.WithPredicates(podGangPredicate()),
 		).
 		Watches(
 			&grovecorev1alpha1.PodGangMap{},
-			handler.EnqueueRequestsFromMapFunc(mapPodGangMapToPCLQs()),
+			handler.EnqueueRequestsFromMapFunc(r.mapSchedulingDependencyToPCLQs(mapPodGangMapToPCLQs())),
 			builder.WithPredicates(podGangMapPredicate()),
-		).
-		Complete(r)
+		)
+	for _, backend := range r.schedRegistry.All() {
+		if resourceBackend, ok := backend.(scheduler.PodGangResourceBackend); ok {
+			b = b.Watches(resourceBackend.PodGangResource(),
+				handler.EnqueueRequestsFromMapFunc(r.mapSchedulingDependencyToPCLQs(nil)))
+		}
+	}
+	return b.Complete(r)
 }
 
 // managedPodCliquePredicate filters PodClique events to only process managed PodCliques owned by expected resources
@@ -347,8 +362,8 @@ func extractPCLQNameFromPodName(podName string) string {
 // podGangPredicate filters PodGang events to trigger on initialization and spec updates
 func podGangPredicate() predicate.Predicate {
 	return predicate.Funcs{
-		CreateFunc: func(_ event.CreateEvent) bool { return false },
-		DeleteFunc: func(_ event.DeleteEvent) bool { return false },
+		CreateFunc: func(e event.CreateEvent) bool { return grovectrlutils.IsManagedPodGang(e.Object) },
+		DeleteFunc: func(e event.DeleteEvent) bool { return grovectrlutils.IsManagedPodGang(e.Object) },
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldPG, okOld := e.ObjectOld.(*groveschedulerv1alpha1.PodGang)
 			newPG, okNew := e.ObjectNew.(*groveschedulerv1alpha1.PodGang)
@@ -366,7 +381,8 @@ func podGangPredicate() predicate.Predicate {
 			// Also trigger when PodGang spec changes (e.g., scale out/in adds/removes pod references)
 			// This ensures scheduling gates are removed from newly added pods
 			// Check if metadata.generation changed (Kubernetes increments this on spec changes)
-			if newInitialized && oldPG.GetGeneration() != newPG.GetGeneration() {
+			if oldPG.GetGeneration() != newPG.GetGeneration() ||
+				!reflect.DeepEqual(oldPG.Status.LastScheduled, newPG.Status.LastScheduled) {
 				return true
 			}
 
@@ -406,9 +422,7 @@ func mapPodGangMapToPCLQs() handler.MapFunc {
 	}
 }
 
-// podGangMapPredicate triggers the PodClique controller on a PodGangMap create and on an update that
-// changes the standalone PodClique placement. It does not fire on other spec churn such as
-// PodCliqueScalingGroup replica-index moves, which the PodClique controller does not consume.
+// podGangMapPredicate observes placement and dependency changes used by scheduling gate removal.
 func podGangMapPredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc:  func(_ event.CreateEvent) bool { return true },
@@ -420,30 +434,9 @@ func podGangMapPredicate() predicate.Predicate {
 			if !okOld || !okNew {
 				return false
 			}
-			return standaloneDistributionChanged(oldPGM, newPGM)
+			return !reflect.DeepEqual(oldPGM.Spec.Entries, newPGM.Spec.Entries)
 		},
 	}
-}
-
-// standaloneDistributionChanged reports whether the standalone PodClique counts differ between the
-// two PodGangMaps. It compares the maps returned by standaloneDistribution. Because those maps key a
-// count by both the entry epoch and the PodClique name, moving a PodClique from one entry to another
-// with the same total still counts as a change.
-func standaloneDistributionChanged(oldPGM, newPGM *grovecorev1alpha1.PodGangMap) bool {
-	return !maps.Equal(standaloneDistribution(oldPGM), standaloneDistribution(newPGM))
-}
-
-// standaloneDistribution returns the standalone PodClique count of every entry. The key of each count
-// is the entry epoch and the PodClique name joined together, so the same PodClique under two
-// different epochs yields two distinct keys. Entries with no standalone PodCliques contribute no keys.
-func standaloneDistribution(pgm *grovecorev1alpha1.PodGangMap) map[string]int32 {
-	dist := make(map[string]int32)
-	for _, entry := range pgm.Spec.Entries {
-		for cliqueName, count := range entry.PodCliques {
-			dist[entry.Epoch+"/"+cliqueName] = count
-		}
-	}
-	return dist
 }
 
 // isPodGangInitialized checks if a PodGang has Initialized condition set to True.

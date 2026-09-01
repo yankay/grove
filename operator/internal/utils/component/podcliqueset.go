@@ -27,6 +27,7 @@ import (
 	"github.com/samber/lo"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -83,7 +84,7 @@ func WithPodCliqueSetCache(ctx context.Context) context.Context {
 // GetPodCliqueSet gets the owner PodCliqueSet object. When the context carries a cache from
 // WithPodCliqueSetCache, the first lookup populates it and subsequent calls skip the Get.
 // The returned pointer is the cached instance — callers must not mutate it in place.
-func GetPodCliqueSet(ctx context.Context, cl client.Client, objectMeta metav1.ObjectMeta) (*grovecorev1alpha1.PodCliqueSet, error) {
+func GetPodCliqueSet(ctx context.Context, cl client.Reader, objectMeta metav1.ObjectMeta) (*grovecorev1alpha1.PodCliqueSet, error) {
 	pcsName := GetPodCliqueSetName(objectMeta)
 	key := objectMeta.Namespace + "/" + pcsName
 	cache, _ := ctx.Value(pcsCacheKey{}).(*pcsCache)
@@ -231,7 +232,7 @@ func GetStandalonePCLQReplicasFromPCSTemplateSpec(pcs *grovecorev1alpha1.PodCliq
 	result := make(map[string]int32)
 	for _, cliqueTemplate := range pcs.Spec.Template.Cliques {
 		if IsStandalonePCLQ(pcs, cliqueTemplate.Name) {
-			result[cliqueTemplate.Name] = cliqueTemplate.Spec.Replicas
+			result[cliqueTemplate.Name] = ptr.Deref(cliqueTemplate.Spec.Replicas, 1)
 		}
 	}
 	return result

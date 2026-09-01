@@ -100,7 +100,7 @@ func TestValidateCreate(t *testing.T) {
 								Spec: grovecorev1alpha1.PodCliqueSpec{
 									RoleName: "test-pclq",
 									PodSpec:  testutils.NewPodWithBuilderWithDefaultSpec("test-pclq-xs345", "default").Build().Spec,
-									Replicas: 1,
+									Replicas: ptr.To[int32](1),
 								},
 							},
 						},
@@ -152,7 +152,7 @@ func TestValidateCreate(t *testing.T) {
 								Name: "test-pclq",
 								Spec: grovecorev1alpha1.PodCliqueSpec{
 									RoleName:     "test-role",
-									Replicas:     1,
+									Replicas:     ptr.To[int32](1),
 									MinAvailable: ptr.To(int32(1)),
 									PodSpec: corev1.PodSpec{
 										SchedulerName: "unknown-scheduler",

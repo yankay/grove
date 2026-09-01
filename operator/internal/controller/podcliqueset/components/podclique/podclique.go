@@ -265,6 +265,8 @@ func (r _resource) doCreateOrUpdate(ctx context.Context, logger logr.Logger, pcs
 	pcsObjKey := client.ObjectKeyFromObject(pcs)
 
 	opResult, err := k8sutils.CreateOrPatchSpec(ctx, r.client, pclq, func() error {
+		// List results may lag object creation or deletion. Use the object fetched by CreateOrPatchSpec.
+		pclqExists = pclq.ResourceVersion != ""
 		return r.buildResource(logger, pcs, int(pcsReplica), pclqExists, pclq)
 	})
 	if err != nil {

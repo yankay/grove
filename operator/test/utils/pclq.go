@@ -60,7 +60,7 @@ func NewPCSGPodCliqueBuilder(name, namespace, pcsName, pcsgName string, pcsRepli
 			},
 		},
 		Spec: grovecorev1alpha1.PodCliqueSpec{
-			Replicas:     1,
+			Replicas:     ptr.To[int32](1),
 			MinAvailable: ptr.To(int32(1)),
 		},
 		Status: grovecorev1alpha1.PodCliqueStatus{},
@@ -83,7 +83,7 @@ func (b *PodCliqueBuilder) WithLabels(labels map[string]string) *PodCliqueBuilde
 // WithReplicas sets the number of replicas for the PodClique.
 // Default is set to 1.
 func (b *PodCliqueBuilder) WithReplicas(replicas int32) *PodCliqueBuilder {
-	b.pclq.Spec.Replicas = replicas
+	b.pclq.Spec.Replicas = ptr.To[int32](replicas)
 	return b
 }
 
@@ -163,7 +163,7 @@ func createDefaultPodCliqueWithoutPodSpec(pcsName string, pcsUID types.UID, pclq
 			},
 		},
 		Spec: grovecorev1alpha1.PodCliqueSpec{
-			Replicas:     1,
+			Replicas:     ptr.To[int32](1),
 			MinAvailable: ptr.To(int32(1)),
 		},
 	}

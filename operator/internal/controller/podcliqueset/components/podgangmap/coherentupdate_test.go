@@ -47,8 +47,8 @@ func TestInScopeStandalonePCLQsByComponent(t *testing.T) {
 		mvuTemplate: &mvuTemplate{standalonePCLQs: map[string]int32{"frontend": 2}},
 		existingStandalonePCLQsByReplica: map[int][]grovecorev1alpha1.PodClique{
 			0: {
-				{ObjectMeta: metav1.ObjectMeta{Name: apicommon.GeneratePodCliqueName(pcsNameReplica, "frontend")}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 5}},
-				{ObjectMeta: metav1.ObjectMeta{Name: apicommon.GeneratePodCliqueName(pcsNameReplica, "router")}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 4}},
+				{ObjectMeta: metav1.ObjectMeta{Name: apicommon.GeneratePodCliqueName(pcsNameReplica, "frontend")}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](5)}},
+				{ObjectMeta: metav1.ObjectMeta{Name: apicommon.GeneratePodCliqueName(pcsNameReplica, "router")}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](4)}},
 			},
 		},
 	}
@@ -58,7 +58,7 @@ func TestInScopeStandalonePCLQsByComponent(t *testing.T) {
 	require.Len(t, pclqByComponent, 1)
 	assert.Contains(t, pclqByComponent, "frontend")
 	assert.NotContains(t, pclqByComponent, "router")
-	assert.Equal(t, int32(5), pclqByComponent["frontend"].Spec.Replicas)
+	assert.Equal(t, ptr.To(int32(5)), pclqByComponent["frontend"].Spec.Replicas)
 }
 
 // TestInScopePCSGsByComponent checks that the PodCliqueScalingGroups of a replica are indexed by component
@@ -113,8 +113,8 @@ func TestComputeDesiredReplicas(t *testing.T) {
 		Spec: grovecorev1alpha1.PodCliqueSetSpec{
 			Template: grovecorev1alpha1.PodCliqueSetTemplateSpec{
 				Cliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{
-					{Name: "frontend", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: frontendTemplateReplicas}},
-					{Name: "decode-worker", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1}},
+					{Name: "frontend", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To(frontendTemplateReplicas)}},
+					{Name: "decode-worker", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1)}},
 				},
 				PodCliqueScalingGroupConfigs: []grovecorev1alpha1.PodCliqueScalingGroupConfig{
 					{Name: "decode", CliqueNames: []string{"decode-worker"}, Replicas: ptr.To(decodeTemplateReplicas)},
@@ -126,7 +126,7 @@ func TestComputeDesiredReplicas(t *testing.T) {
 		pcs:         pcs,
 		mvuTemplate: &mvuTemplate{standalonePCLQs: map[string]int32{"frontend": 2}, pcsgs: map[string]int32{"decode": 3}},
 	}
-	frontendObj := grovecorev1alpha1.PodClique{Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 5}}
+	frontendObj := grovecorev1alpha1.PodClique{Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](5)}}
 	decodeObj := grovecorev1alpha1.PodCliqueScalingGroup{Spec: grovecorev1alpha1.PodCliqueScalingGroupSpec{Replicas: 7}}
 
 	tests := []struct {
@@ -719,7 +719,7 @@ func newCoherentTestSnapshot(pcsNameReplica apicommon.ResourceNameReplica, liveR
 						Name:          "frontend",
 						RollingUpdate: &grovecorev1alpha1.RollingUpdateConfiguration{MaxUnavailable: maxUnavailable},
 						Spec: grovecorev1alpha1.PodCliqueSpec{
-							Replicas:     liveReplicas,
+							Replicas:     ptr.To(liveReplicas),
 							MinAvailable: ptr.To(minAvailable),
 						},
 					},
@@ -730,7 +730,7 @@ func newCoherentTestSnapshot(pcsNameReplica apicommon.ResourceNameReplica, liveR
 	}
 	frontendPCLQ := grovecorev1alpha1.PodClique{
 		ObjectMeta: metav1.ObjectMeta{Name: apicommon.GeneratePodCliqueName(pcsNameReplica, "frontend")},
-		Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: liveReplicas},
+		Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To(liveReplicas)},
 		Status: grovecorev1alpha1.PodCliqueStatus{
 			ReadyReplicas:  liveReplicas,
 			UpdateProgress: &grovecorev1alpha1.PodCliqueUpdateProgress{UpdatedScheduledReplicas: liveReplicas},

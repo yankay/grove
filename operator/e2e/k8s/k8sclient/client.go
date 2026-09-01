@@ -37,6 +37,7 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crlog "sigs.k8s.io/controller-runtime/pkg/log"
+	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
 // Client is the unified Kubernetes client for e2e tests.
@@ -56,6 +57,7 @@ var schemeBuilder = runtime.SchemeBuilder{
 	groveschedulerv1alpha1.AddToScheme,
 	kaischedulingv2alpha2.AddToScheme,
 	kaitopologyv1alpha1.AddToScheme,
+	volcanov1beta1.AddToScheme,
 }
 
 // newScheme creates a runtime.Scheme with all e2e types registered.
