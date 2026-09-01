@@ -415,127 +415,74 @@ func TestIsLastPCLQUpdateCompleted(t *testing.T) {
 	}
 }
 
-// TestWasPCLQEverScheduled verifies the signal used to gate gang-termination reads the durable
-// Status.LastScheduled marker: set means the PodClique was scheduled at least once, nil means never.
-func TestWasPCLQEverScheduled(t *testing.T) {
-	scheduledAt := metav1.Now()
+func TestIsMinAvailableBreachArmed(t *testing.T) {
 	tests := []struct {
-		name string
-		pclq *grovecorev1alpha1.PodClique
-		want bool
+		name       string
+		generation int64
+		condition  *metav1.Condition
+		want       bool
 	}{
-		{
-			name: "LastScheduled nil (never scheduled)",
-			pclq: &grovecorev1alpha1.PodClique{},
-			want: false,
-		},
-		{
-			name: "LastScheduled set (scheduled at least once)",
-			pclq: &grovecorev1alpha1.PodClique{
-				Status: grovecorev1alpha1.PodCliqueStatus{LastScheduled: &scheduledAt},
-			},
-			want: true,
-		},
+		{name: "missing condition", generation: 1},
+		{name: "legacy condition without observed generation", generation: 1, condition: &metav1.Condition{Reason: constants.ConditionReasonInsufficientReadyPods}},
+		{name: "initial scheduling", generation: 1, condition: &metav1.Condition{Reason: constants.ConditionReasonInitialScheduling, ObservedGeneration: 1}},
+		{name: "idle", generation: 1, condition: &metav1.Condition{Reason: constants.ConditionReasonIdle, ObservedGeneration: 1}},
+		{name: "update", generation: 1, condition: &metav1.Condition{Reason: constants.ConditionReasonUpdateInProgress, ObservedGeneration: 1}},
+		{name: "healthy PodClique", generation: 1, condition: &metav1.Condition{Reason: constants.ConditionReasonSufficientReadyPods, ObservedGeneration: 1}, want: true},
+		{name: "regressed PodClique", generation: 1, condition: &metav1.Condition{Reason: constants.ConditionReasonInsufficientReadyPods, ObservedGeneration: 1}, want: true},
+		{name: "healthy PCSG", generation: 1, condition: &metav1.Condition{Reason: constants.ConditionReasonSufficientAvailablePCSGReplicas, ObservedGeneration: 1}, want: true},
+		{name: "stale generation", generation: 2, condition: &metav1.Condition{Reason: constants.ConditionReasonSufficientReadyPods, ObservedGeneration: 1}},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			actual := WasPCLQEverScheduled(tc.pclq)
-			assert.Equal(t, tc.want, actual)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var conditions []metav1.Condition
+			if tt.condition != nil {
+				condition := *tt.condition
+				condition.Type = constants.ConditionTypeMinAvailableBreached
+				conditions = []metav1.Condition{condition}
+			}
+			assert.Equal(t, tt.want, IsMinAvailableBreachArmed(conditions, tt.generation))
 		})
 	}
 }
 
-// TestWasPCSGEverHealthy covers the PCSG analog: MinAvailableBreached=False at some point
-// since creation means the PCSG was ever in a healthy state.
-func TestWasPCSGEverHealthy(t *testing.T) {
-	created := metav1.Now()
-	wellAfterCreate := metav1.NewTime(created.Add(InitialScheduleGrace + time.Second))
-	withinGraceOfCreate := metav1.NewTime(created.Add(time.Millisecond * 100))
-
-	tests := []struct {
-		name string
-		pcsg *grovecorev1alpha1.PodCliqueScalingGroup
-		want bool
-	}{
+func TestGetMinAvailableBreachedPCLQInfoUsesPersistentReason(t *testing.T) {
+	now := time.Now()
+	condition := func(reason string, observedGeneration int64) []metav1.Condition {
+		return []metav1.Condition{{
+			Type:               constants.ConditionTypeMinAvailableBreached,
+			Status:             metav1.ConditionTrue,
+			Reason:             reason,
+			ObservedGeneration: observedGeneration,
+			LastTransitionTime: metav1.NewTime(now.Add(-2 * time.Hour)),
+		}}
+	}
+	pclqs := []grovecorev1alpha1.PodClique{
 		{
-			name: "no MinAvailableBreached condition (fresh) — never healthy",
-			pcsg: &grovecorev1alpha1.PodCliqueScalingGroup{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: created}},
-			want: false,
+			ObjectMeta: metav1.ObjectMeta{Name: "initial", Generation: 1},
+			Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: 1},
+			Status:     grovecorev1alpha1.PodCliqueStatus{Conditions: condition(constants.ConditionReasonInitialScheduling, 1)},
 		},
 		{
-			name: "MinAvailableBreached=True set near creation — never healthy",
-			pcsg: &grovecorev1alpha1.PodCliqueScalingGroup{
-				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: created},
-				Status: grovecorev1alpha1.PodCliqueScalingGroupStatus{Conditions: []metav1.Condition{{
-					Type:               constants.ConditionTypeMinAvailableBreached,
-					Status:             metav1.ConditionTrue,
-					LastTransitionTime: withinGraceOfCreate,
-				}}},
-			},
-			want: false,
+			ObjectMeta: metav1.ObjectMeta{Name: "legacy", Generation: 1},
+			Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: 1},
+			Status:     grovecorev1alpha1.PodCliqueStatus{Conditions: condition(constants.ConditionReasonInsufficientReadyPods, 0)},
 		},
 		{
-			name: "MinAvailableBreached=False now — currently healthy",
-			pcsg: &grovecorev1alpha1.PodCliqueScalingGroup{
-				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: created},
-				Status: grovecorev1alpha1.PodCliqueScalingGroupStatus{Conditions: []metav1.Condition{{
-					Type:               constants.ConditionTypeMinAvailableBreached,
-					Status:             metav1.ConditionFalse,
-					LastTransitionTime: wellAfterCreate,
-				}}},
-			},
-			want: true,
+			ObjectMeta: metav1.ObjectMeta{Name: "regressed", Generation: 1},
+			Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: 1},
+			Status:     grovecorev1alpha1.PodCliqueStatus{Conditions: condition(constants.ConditionReasonInsufficientReadyPods, 1)},
 		},
 		{
-			name: "MinAvailableBreached=True but flipped well after create — was healthy, regressed",
-			pcsg: &grovecorev1alpha1.PodCliqueScalingGroup{
-				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: created},
-				Status: grovecorev1alpha1.PodCliqueScalingGroupStatus{Conditions: []metav1.Condition{{
-					Type:               constants.ConditionTypeMinAvailableBreached,
-					Status:             metav1.ConditionTrue,
-					LastTransitionTime: wellAfterCreate,
-				}}},
-			},
-			want: true,
+			ObjectMeta: metav1.ObjectMeta{Name: "idle", Generation: 1},
+			Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: 0},
+			Status:     grovecorev1alpha1.PodCliqueStatus{Conditions: condition(constants.ConditionReasonInsufficientReadyPods, 1)},
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, WasPCSGEverHealthy(tc.pcsg))
-		})
-	}
-}
-
-// TestGetMinAvailableBreachedPCLQInfoFiltersNeverScheduled pins the action-gate: PCLQs that
-// have MinAvailableBreached=True but were never PodCliqueScheduled=True are excluded from the
-// candidate list — gang-termination must not fire on them.
-func TestGetMinAvailableBreachedPCLQInfoFiltersNeverScheduled(t *testing.T) {
-	scheduledAt := metav1.Now()
-	pclqBreachedNeverScheduled := grovecorev1alpha1.PodClique{
-		ObjectMeta: metav1.ObjectMeta{Name: "never-scheduled"},
-		Status: grovecorev1alpha1.PodCliqueStatus{
-			Conditions: []metav1.Condition{{
-				Type:   constants.ConditionTypeMinAvailableBreached,
-				Status: metav1.ConditionTrue,
-			}},
-		},
-	}
-	pclqBreachedAfterScheduled := grovecorev1alpha1.PodClique{
-		ObjectMeta: metav1.ObjectMeta{Name: "scheduled-once"},
-		Status: grovecorev1alpha1.PodCliqueStatus{
-			LastScheduled: &scheduledAt,
-			Conditions: []metav1.Condition{{
-				Type:   constants.ConditionTypeMinAvailableBreached,
-				Status: metav1.ConditionTrue,
-			}},
-		},
-	}
-
-	pclqs := []grovecorev1alpha1.PodClique{pclqBreachedNeverScheduled, pclqBreachedAfterScheduled}
-	actual, _ := GetMinAvailableBreachedPCLQInfo(pclqs, time.Hour, time.Now())
-	assert.Equal(t, []string{"scheduled-once"}, actual, "never-scheduled PodClique must be filtered out")
+	names, waitFor := GetMinAvailableBreachedPCLQInfo(pclqs, time.Hour, now)
+	assert.Equal(t, []string{"regressed"}, names)
+	assert.LessOrEqual(t, waitFor, time.Duration(0))
 }
 
 func TestGroupPCLQsByPCSReplicaIndex(t *testing.T) {
