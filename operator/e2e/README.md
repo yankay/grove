@@ -56,6 +56,33 @@ To trigger e2e tests on a draft PR:
 
 The CI workflow is defined in `.github/workflows/e2e-test.yaml`.
 
+### Workload-Aware Scheduling (default-scheduler gang) tests
+
+The `Test_WAS*` cases in `tests/was_scheduling_test.go` exercise the
+default-scheduler hierarchical gang scheduling backend (GREP-531), which relies
+on the upstream Kubernetes Workload-Aware Scheduling APIs (`Workload`,
+`CompositePodGroup`, `PodGroup`). These are alpha in Kubernetes 1.37 and are
+**off by default**, so the tests skip cleanly unless the cluster serves them.
+
+To run them, bring up a kind cluster with the APIs enabled:
+
+```bash
+hack/kind-up.sh --enable-was
+```
+
+This provisions a `kindest/node:v1.37.0` cluster with the `GenericWorkload`,
+`CompositePodGroup`, and `TopologyAwareWorkloadScheduling` feature gates enabled
+on the apiserver, scheduler, and controller-manager, and serves the
+`scheduling.k8s.io/v1beta1` and `v1alpha3` API groups. It requires `kind`
+>= v0.33.0 (older versions emit a `kubeadm.k8s.io/v1beta3` config that
+Kubernetes 1.37 rejects). With such a cluster, `Test_WAS1/2/3` verify the
+generated Workload hierarchy, cross-group gang holding, and the
+preferred-topology fail-closed path against the real scheduler.
+
+### Running in CI/CD
+
+E2E tests are automatically run on GitHub Actions for:
+
 ## Managing Dependencies
 
 E2E test dependencies (container images and Helm charts) are managed in `dependencies.yaml`, similar to how Go dependencies are managed in `go.mod`.
