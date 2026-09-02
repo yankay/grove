@@ -97,6 +97,13 @@ release: "{{ .Release.Name }}"
 {{- end -}}
 {{- end -}}
 
+{{/* Returns "true" if the default-scheduler profile has gang scheduling enabled, empty string otherwise. */}}
+{{- define "grove.scheduler.kubeGangSchedulingEnabled" -}}
+{{- range .Values.config.scheduler.profiles -}}
+{{- if and (eq .name "default-scheduler") .config .config.gangScheduling -}}true{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "operator.config.labels" -}}
 {{- include "common.chart.labels" . }}
 {{- range $key, $val := .Values.configMap.labels }}
