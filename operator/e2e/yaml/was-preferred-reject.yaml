@@ -1,0 +1,47 @@
+# WAS Workload (negative): preferred topology constraint is unsupported by the
+# Kubernetes Workload-Aware Scheduling APIs and must be rejected by the
+# default-scheduler backend's PodCliqueSet validation (fail closed, GREP-531).
+---
+apiVersion: grove.io/v1alpha1
+kind: PodCliqueSet
+metadata:
+  name: was-preferred-reject
+  labels:
+    app: was-preferred-reject
+spec:
+  replicas: 1
+  template:
+    topologyConstraint:
+      topologyName: grove-topology
+      pack:
+        preferred: rack
+    cliques:
+      - name: pc-a
+        spec:
+          roleName: role-a
+          replicas: 1
+          minAvailable: 1
+          podSpec:
+            terminationGracePeriodSeconds: 5
+            schedulerName: default-scheduler
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - key: node_role.e2e.grove.nvidia.com
+                          operator: In
+                          values:
+                            - agent
+            tolerations:
+              - key: node_role.e2e.grove.nvidia.com
+                operator: Equal
+                value: agent
+                effect: NoSchedule
+            containers:
+              - name: pc-a
+                image: registry:5001/busybox:latest
+                command: ["sleep", "infinity"]
+                resources:
+                  requests:
+                    memory: 80Mi

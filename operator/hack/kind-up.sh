@@ -26,7 +26,14 @@ DEPLOY_REGISTRY=true
 RECREATE_CLUSTER=false
 FEATURE_GATES=()
 FAKE_NODES=0
+ENABLE_WAS=false
+NODE_IMAGE="kindest/node:v1.37.0"
 USAGE=""
+
+# Workload-Aware Scheduling (WAS) feature gates and API group/versions used by
+# the default-scheduler hierarchical gang scheduling backend (GREP-531).
+WAS_FEATURE_GATES="GenericWorkload=true,CompositePodGroup=true,TopologyAwareWorkloadScheduling=true"
+WAS_RUNTIME_CONFIG="scheduling.k8s.io/v1beta1=true,scheduling.k8s.io/v1alpha3=true"
 
 function kind::create_usage() {
   usage=$(printf '%s\n' "
@@ -36,6 +43,9 @@ function kind::create_usage() {
     -s | --skip-registry                  Skip creating a local docker registry. Default value is false.
     -r | --recreate                       If this flag is specified then it will recreate the cluster if it already exists.
     -g | --feature-gates <feature-gates>  Comma separated list of feature gates to enable on the cluster.
+    -w | --enable-was                     Enable the Kubernetes Workload-Aware Scheduling APIs (Workload,
+                                          CompositePodGroup, PodGroup) required by the default-scheduler
+                                          hierarchical gang scheduling backend (GREP-531).
     -f | --fake-nodes    <count>          Number of fake nodes to create using KWOK. Default value is 0.
   ")
   echo "${usage}"
@@ -76,6 +86,10 @@ function kind::parse_flags() {
         IFS=',' read -r -a FEATURE_GATES <<< "$1"
         unset IFS
         ;;
+      --enable-was | -w)
+        ENABLE_WAS=true
+        shift
+        ;;
       --fake-nodes | -f)
         shift
         FAKE_NODES=$1
@@ -109,8 +123,34 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
 - role: control-plane
-  image: kindest/node:v1.35.1
+  image: ${NODE_IMAGE}
 EOF
+  if [ "${ENABLE_WAS}" = true ]; then
+    echo "Enabling Workload-Aware Scheduling APIs on the kind cluster config..."
+    # The Workload / CompositePodGroup / PodGroup APIs are alpha in Kubernetes
+    # 1.37: enable their feature gates on the control-plane components and serve
+    # the scheduling.k8s.io alpha/beta API groups via the apiserver runtime-config.
+    cat >>"${KIND_CONFIG_DIR}/cluster-config.yaml" <<EOF
+  kubeadmConfigPatches:
+  - |
+    apiVersion: kubeadm.k8s.io/v1beta4
+    kind: ClusterConfiguration
+    apiServer:
+      extraArgs:
+      - name: runtime-config
+        value: "${WAS_RUNTIME_CONFIG}"
+      - name: feature-gates
+        value: "${WAS_FEATURE_GATES}"
+    scheduler:
+      extraArgs:
+      - name: feature-gates
+        value: "${WAS_FEATURE_GATES}"
+    controllerManager:
+      extraArgs:
+      - name: feature-gates
+        value: "${WAS_FEATURE_GATES}"
+EOF
+  fi
   if [ "${DEPLOY_REGISTRY}" = true ]; then
     echo "Adding registry config to the kind cluster config..."
     printf -v reg '[plugins."io.containerd.grpc.v1.cri".registry]

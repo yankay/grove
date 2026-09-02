@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -362,4 +363,197 @@ func TestPreparePod_GangSchedulingMissingCliqueLabel(t *testing.T) {
 	err := backend.PreparePod(pod)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, apicommon.LabelPodClique)
+}
+
+func TestPreparePod_NoGangSchedulingSetsSchedulerNameOnly(t *testing.T) {
+	backend, _ := newGangBackend(t)
+	backend.gangSchedulingEnabled = false
+
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: testNamespace}}
+	require.NoError(t, backend.PreparePod(pod))
+
+	assert.Equal(t, string(configv1alpha1.SchedulerNameKube), pod.Spec.SchedulerName)
+	assert.Nil(t, pod.Spec.SchedulingGroup, "without gang scheduling no PodGroup membership is assigned")
+}
+
+// TestBuildWorkloadForPodGang_AllPodGroupsGrouped verifies the hierarchy when
+// every PodGroup belongs to a topology constraint group, so the root composite
+// has only composite children and no direct leaf templates.
+func TestBuildWorkloadForPodGang_AllPodGroupsGrouped(t *testing.T) {
+	podGang := newTestPodGang(
+		withTopologyGroup("tcg-a", []string{"test-pcs-0-prefill"}, "topology.kubernetes.io/rack"),
+		withTopologyGroup("tcg-b", []string{"test-pcs-0-decode"}, "topology.kubernetes.io/block"),
+	)
+
+	workload, err := buildWorkloadForPodGang(podGang, nil)
+	require.NoError(t, err)
+
+	require.Len(t, workload.Spec.CompositePodGroupTemplates, 1)
+	root := workload.Spec.CompositePodGroupTemplates[0]
+	require.NotNil(t, root.SchedulingPolicy.Gang)
+	assert.Equal(t, int32(2), root.SchedulingPolicy.Gang.MinGroupCount)
+	assert.Empty(t, root.PodGroupTemplates, "all leaves live under topology groups")
+	require.Len(t, root.CompositePodGroupTemplates, 2)
+
+	byName := map[string]schedulingv1beta1.CompositePodGroupTemplate{}
+	for _, group := range root.CompositePodGroupTemplates {
+		byName[group.Name] = group
+	}
+	require.Contains(t, byName, "tcg-a")
+	require.Contains(t, byName, "tcg-b")
+	require.Len(t, byName["tcg-a"].PodGroupTemplates, 1)
+	assert.Equal(t, "test-pcs-0-prefill", byName["tcg-a"].PodGroupTemplates[0].Name)
+	require.NotNil(t, byName["tcg-b"].SchedulingConstraints)
+	require.Len(t, byName["tcg-b"].SchedulingConstraints.Topology, 1)
+	assert.Equal(t, "topology.kubernetes.io/block", byName["tcg-b"].SchedulingConstraints.Topology[0].Key)
+}
+
+// TestBuildWorkloadForPodGang_LeafRequiredTopology verifies a required topology
+// constraint set directly on a PodGroup lands on its leaf template.
+func TestBuildWorkloadForPodGang_LeafRequiredTopology(t *testing.T) {
+	podGang := newTestPodGang(func(podGang *groveschedulerv1alpha1.PodGang) {
+		podGang.Spec.PodGroups[0].TopologyConstraint = &groveschedulerv1alpha1.TopologyConstraint{
+			PackConstraint: &groveschedulerv1alpha1.TopologyPackConstraint{Required: ptr.To("kubernetes.io/hostname")},
+		}
+	})
+
+	workload, err := buildWorkloadForPodGang(podGang, nil)
+	require.NoError(t, err)
+
+	root := workload.Spec.CompositePodGroupTemplates[0]
+	var prefill *schedulingv1beta1.PodGroupTemplate
+	for i := range root.PodGroupTemplates {
+		if root.PodGroupTemplates[i].Name == "test-pcs-0-prefill" {
+			prefill = &root.PodGroupTemplates[i]
+		}
+	}
+	require.NotNil(t, prefill)
+	require.NotNil(t, prefill.SchedulingConstraints)
+	require.Len(t, prefill.SchedulingConstraints.Topology, 1)
+	assert.Equal(t, "kubernetes.io/hostname", prefill.SchedulingConstraints.Topology[0].Key)
+}
+
+// TestBuildWorkloadForPodGang_PriorityClassPropagates verifies the PodGang
+// priority class name is copied onto the leaf templates.
+func TestBuildWorkloadForPodGang_PriorityClassPropagates(t *testing.T) {
+	podGang := newTestPodGang(func(podGang *groveschedulerv1alpha1.PodGang) {
+		podGang.Spec.PriorityClassName = "high-priority"
+	})
+
+	workload, err := buildWorkloadForPodGang(podGang, nil)
+	require.NoError(t, err)
+
+	root := workload.Spec.CompositePodGroupTemplates[0]
+	require.NotEmpty(t, root.PodGroupTemplates)
+	for _, leaf := range root.PodGroupTemplates {
+		assert.Equal(t, "high-priority", leaf.PriorityClassName, "leaf %q inherits the PodGang priority class", leaf.Name)
+	}
+}
+
+// TestBuildWorkloadForPodGang_ZeroMinReplicasRetainsFallback verifies that a
+// zero MinReplicas resolves to the supplied fallback minCount rather than
+// failing closed.
+func TestBuildWorkloadForPodGang_ZeroMinReplicasRetainsFallback(t *testing.T) {
+	podGang := newTestPodGang(func(podGang *groveschedulerv1alpha1.PodGang) {
+		podGang.Spec.PodGroups[1].MinReplicas = 0
+	})
+
+	workload, err := buildWorkloadForPodGang(podGang, map[string]int32{"test-pcs-0-decode": 4})
+	require.NoError(t, err)
+
+	root := workload.Spec.CompositePodGroupTemplates[0]
+	var decode *schedulingv1beta1.PodGroupTemplate
+	for i := range root.PodGroupTemplates {
+		if root.PodGroupTemplates[i].Name == "test-pcs-0-decode" {
+			decode = &root.PodGroupTemplates[i]
+		}
+	}
+	require.NotNil(t, decode)
+	require.NotNil(t, decode.SchedulingPolicy.Gang)
+	assert.Equal(t, int32(4), decode.SchedulingPolicy.Gang.MinCount)
+}
+
+// TestSyncPodGang_Idempotent verifies a second sync with an unchanged PodGang
+// does not error and does not alter the persisted Workload.
+func TestSyncPodGang_Idempotent(t *testing.T) {
+	podGang := newTestPodGang(withTopologyGroup("tcg-a", []string{"test-pcs-0-prefill"}, "topology.kubernetes.io/rack"))
+	backend, cl := newGangBackend(t, podGang)
+	ctx := context.Background()
+	require.NoError(t, backend.SyncPodGang(ctx, podGang))
+
+	before := &schedulingv1beta1.Workload{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: testPodGangName}, before))
+
+	require.NoError(t, backend.SyncPodGang(ctx, podGang))
+
+	after := &schedulingv1beta1.Workload{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: testPodGangName}, after))
+	assert.Equal(t, before.ResourceVersion, after.ResourceVersion, "idempotent sync must not rewrite the Workload")
+}
+
+// TestSyncPodGang_GeneratedObjectsOwnedByPodGang verifies every generated
+// object carries a controller owner reference to the PodGang for garbage
+// collection, plus the grove.io/podgang label used for cleanup.
+func TestSyncPodGang_GeneratedObjectsOwnedByPodGang(t *testing.T) {
+	podGang := newTestPodGang(withTopologyGroup("tcg-a", []string{"test-pcs-0-prefill"}, ""))
+	backend, cl := newGangBackend(t, podGang)
+	ctx := context.Background()
+	require.NoError(t, backend.SyncPodGang(ctx, podGang))
+
+	assertOwnedByPodGang := func(obj client.Object) {
+		owners := obj.GetOwnerReferences()
+		require.Len(t, owners, 1)
+		assert.Equal(t, "PodGang", owners[0].Kind)
+		assert.Equal(t, testPodGangName, owners[0].Name)
+		require.NotNil(t, owners[0].Controller)
+		assert.True(t, *owners[0].Controller)
+		assert.Equal(t, testPodGangName, obj.GetLabels()[apicommon.LabelPodGang])
+	}
+
+	workload := &schedulingv1beta1.Workload{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: testPodGangName}, workload))
+	require.Len(t, workload.OwnerReferences, 1)
+	assert.Equal(t, "PodGang", workload.OwnerReferences[0].Kind)
+
+	rootComposite := &schedulingv1alpha3.CompositePodGroup{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: testPodGangName}, rootComposite))
+	assertOwnedByPodGang(rootComposite)
+
+	prefill := &schedulingv1beta1.PodGroup{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "test-pcs-0-prefill"}, prefill))
+	assertOwnedByPodGang(prefill)
+}
+
+// TestSyncPodGang_NilPodGangErrors verifies a nil PodGang is rejected.
+func TestSyncPodGang_NilPodGangErrors(t *testing.T) {
+	backend, _ := newGangBackend(t)
+	err := backend.SyncPodGang(context.Background(), nil)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "nil")
+}
+
+// TestSyncPodGang_ShrinkRebuildsHierarchy verifies removing a PodGroup rebuilds
+// the immutable hierarchy and deletes the stale runtime PodGroup.
+func TestSyncPodGang_ShrinkRebuildsHierarchy(t *testing.T) {
+	podGang := newTestPodGang(func(podGang *groveschedulerv1alpha1.PodGang) {
+		podGang.Spec.PodGroups = append(podGang.Spec.PodGroups, groveschedulerv1alpha1.PodGroup{Name: "test-pcs-0-router", MinReplicas: 1})
+	})
+	backend, cl := newGangBackend(t, podGang)
+	ctx := context.Background()
+	require.NoError(t, backend.SyncPodGang(ctx, podGang))
+
+	router := &schedulingv1beta1.PodGroup{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "test-pcs-0-router"}, router))
+
+	// Remove the router PodGroup: structure shrinks and must rebuild.
+	podGang.Spec.PodGroups = podGang.Spec.PodGroups[:2]
+	require.NoError(t, backend.SyncPodGang(ctx, podGang))
+
+	workload := &schedulingv1beta1.Workload{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: testPodGangName}, workload))
+	assert.Len(t, workload.Spec.CompositePodGroupTemplates[0].PodGroupTemplates, 2)
+
+	staleRouter := &schedulingv1beta1.PodGroup{}
+	err := cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "test-pcs-0-router"}, staleRouter)
+	assert.True(t, apierrors.IsNotFound(err), "stale router PodGroup must be deleted on rebuild, got %v", err)
 }
