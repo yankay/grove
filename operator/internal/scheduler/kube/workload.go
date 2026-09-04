@@ -16,6 +16,7 @@ package kube
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"maps"
 
@@ -35,15 +36,34 @@ import (
 // Template and runtime object naming for the generated hierarchy:
 //
 //	Workload (name: <podgang>)
-//	└─ CompositePodGroupTemplate "root"            -> CompositePodGroup <podgang>
-//	   ├─ CompositePodGroupTemplate <tcg-name>     -> CompositePodGroup <podgang>-<tcg-name>
-//	   │  └─ PodGroupTemplate <grove-podgroup>     -> PodGroup <grove-podgroup>
-//	   └─ PodGroupTemplate <grove-podgroup>        -> PodGroup <grove-podgroup>
+//	└─ CompositePodGroupTemplate "root"          -> CompositePodGroup <podgang>
+//	   ├─ CompositePodGroupTemplate group-<hash> -> CompositePodGroup <podgang>-<tcg-name>
+//	   │  └─ PodGroupTemplate leaf-<hash>        -> PodGroup <grove-podgroup>
+//	   └─ PodGroupTemplate leaf-<hash>           -> PodGroup <grove-podgroup>
 //
 // Runtime leaf PodGroups keep the Grove PodGroup name (the PodClique FQN),
 // which is also the value of the pod label grove.io/podclique. PreparePod uses
 // that label to point pod.spec.schedulingGroup.podGroupName at the leaf.
-const rootTemplateName = "root"
+const (
+	rootTemplateName      = "root"
+	templateNameHashBytes = 10
+)
+
+// workloadTemplateName returns a stable DNS-label-safe identifier. Workload
+// template names are DNS labels, while Grove runtime names are DNS subdomains
+// and can contain dots or exceed 63 characters.
+func workloadTemplateName(prefix, groveName string) string {
+	sum := sha256.Sum256([]byte(groveName))
+	return fmt.Sprintf("%s-%x", prefix, sum[:templateNameHashBytes])
+}
+
+func leafTemplateName(podGroupName string) string {
+	return workloadTemplateName("leaf", podGroupName)
+}
+
+func topologyGroupTemplateName(groupName string) string {
+	return workloadTemplateName("group", groupName)
+}
 
 // buildWorkloadForPodGang compiles a Grove PodGang into an upstream Workload
 // using the workloadbuilder helper. Unsupported mappings fail closed.
@@ -108,7 +128,7 @@ func workloadItemTreeForPodGang(podGang *groveschedulerv1alpha1.PodGang, fallbac
 			minCount = fallback
 		}
 		leafItems[podGroup.Name] = &workloadbuilder.WorkloadItem{
-			Name: podGroup.Name,
+			Name: leafTemplateName(podGroup.Name),
 			DefaultConfig: &workloadbuilder.SchedulingConfig{
 				Policy: &workloadbuilder.SchedulingPolicy{
 					Gang: &workloadbuilder.GangSchedulingPolicy{MinCount: ptr.To(minCount)},
@@ -142,7 +162,7 @@ func workloadItemTreeForPodGang(podGang *groveschedulerv1alpha1.PodGang, fallbac
 			children = append(children, leaf)
 		}
 		rootChildren = append(rootChildren, &workloadbuilder.WorkloadItem{
-			Name: groupConfig.Name,
+			Name: topologyGroupTemplateName(groupConfig.Name),
 			DefaultConfig: &workloadbuilder.SchedulingConfig{
 				Policy: &workloadbuilder.SchedulingPolicy{
 					Gang: &workloadbuilder.GangSchedulingPolicy{MinCount: ptr.To(int32(len(children)))},
@@ -235,10 +255,11 @@ func podGangOwnerReference(podGang *groveschedulerv1alpha1.PodGang) *metav1.Owne
 // workloadHierarchyLabels returns the labels stamped on every generated
 // scheduling object, merging the given base labels.
 func workloadHierarchyLabels(podGang *groveschedulerv1alpha1.PodGang, base map[string]string) map[string]string {
-	result := maps.Clone(base)
+	result := maps.Clone(podGang.Labels)
 	if result == nil {
 		result = map[string]string{}
 	}
+	maps.Copy(result, base)
 	result[apicommon.LabelPodGang] = podGang.Name
 	return result
 }
@@ -274,20 +295,51 @@ func (b *schedulerBackend) syncWorkloadHierarchy(ctx context.Context, podGang *g
 	return b.syncLeafPodGroups(ctx, podGang, persisted)
 }
 
-// persistedLeafMinCounts returns the gang minCount of every leaf template in
-// the already-persisted Workload for the PodGang, or an empty map when none
-// exists yet. These serve as fallbacks when MinReplicas is released to zero.
+// persistedLeafMinCounts returns the last positive gang minCount for every
+// Grove PodGroup. It reads Workload templates first and supplements them from
+// surviving runtime PodGroups so reconciliation can recover if the Workload
+// was deleted after Grove released MinReplicas to zero.
 func (b *schedulerBackend) persistedLeafMinCounts(ctx context.Context, podGang *groveschedulerv1alpha1.PodGang) (map[string]int32, error) {
+	templateMinCounts := map[string]int32{}
 	existing := &schedulingv1beta1.Workload{}
 	err := b.client.Get(ctx, client.ObjectKey{Namespace: podGang.Namespace, Name: podGang.Name}, existing)
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return map[string]int32{}, nil
+		if !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to get Workload %s/%s: %w", podGang.Namespace, podGang.Name, err)
 		}
-		return nil, fmt.Errorf("failed to get Workload %s/%s: %w", podGang.Namespace, podGang.Name, err)
+	} else {
+		if err := requirePodGangOwnership(existing, podGang, "Workload"); err != nil {
+			return nil, err
+		}
+		collectLeafMinCounts(existing.Spec.CompositePodGroupTemplates, existing.Spec.PodGroupTemplates, templateMinCounts)
 	}
-	minCounts := map[string]int32{}
-	collectLeafMinCounts(existing.Spec.CompositePodGroupTemplates, existing.Spec.PodGroupTemplates, minCounts)
+
+	minCounts := make(map[string]int32, len(podGang.Spec.PodGroups))
+	for _, podGroup := range podGang.Spec.PodGroups {
+		if minCount, found := templateMinCounts[leafTemplateName(podGroup.Name)]; found && minCount > 0 {
+			minCounts[podGroup.Name] = minCount
+		}
+	}
+
+	runtimeGroups := &schedulingv1beta1.PodGroupList{}
+	if err := b.client.List(ctx, runtimeGroups,
+		client.InNamespace(podGang.Namespace),
+		client.MatchingLabels{apicommon.LabelPodGang: podGang.Name},
+	); err != nil {
+		return nil, fmt.Errorf("failed to list PodGroups for PodGang %s/%s: %w", podGang.Namespace, podGang.Name, err)
+	}
+	for i := range runtimeGroups.Items {
+		runtimeGroup := &runtimeGroups.Items[i]
+		if !metav1.IsControlledBy(runtimeGroup, podGang) {
+			continue
+		}
+		if _, found := minCounts[runtimeGroup.Name]; found {
+			continue
+		}
+		if gang := runtimeGroup.Spec.SchedulingPolicy.Gang; gang != nil && gang.MinCount > 0 {
+			minCounts[runtimeGroup.Name] = gang.MinCount
+		}
+	}
 	return minCounts, nil
 }
 
@@ -295,7 +347,7 @@ func (b *schedulerBackend) persistedLeafMinCounts(ctx context.Context, podGang *
 // template anywhere in the persisted Workload's composite template tree.
 // Builder.NewPodGroup only indexes top-level PodGroupTemplates, but Grove's
 // leaf templates always live under the root CompositePodGroupTemplate.
-func materializeLeafPodGroup(podGang *groveschedulerv1alpha1.PodGang, workload *schedulingv1beta1.Workload, templateName string) (*schedulingv1beta1.PodGroup, error) {
+func materializeLeafPodGroup(podGang *groveschedulerv1alpha1.PodGang, workload *schedulingv1beta1.Workload, name, templateName string) (*schedulingv1beta1.PodGroup, error) {
 	tmpl := findLeafTemplate(workload.Spec.CompositePodGroupTemplates, workload.Spec.PodGroupTemplates, templateName)
 	if tmpl == nil {
 		return nil, fmt.Errorf("podGroupTemplate %q not found in Workload %q", templateName, workload.Name)
@@ -312,7 +364,7 @@ func materializeLeafPodGroup(podGang *groveschedulerv1alpha1.PodGang, workload *
 	}
 	return &schedulingv1beta1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            templateName,
+			Name:            name,
 			Namespace:       workload.Namespace,
 			OwnerReferences: []metav1.OwnerReference{*podGangOwnerReference(podGang)},
 		},
@@ -350,6 +402,10 @@ func (b *schedulerBackend) syncWorkload(ctx context.Context, podGang *grovesched
 			return nil, fmt.Errorf("failed to create Workload %s/%s: %w", desired.Namespace, desired.Name, createErr)
 		}
 		return desired, nil
+	}
+
+	if err := requirePodGangOwnership(existing, podGang, "Workload"); err != nil {
+		return nil, err
 	}
 
 	if workloadStructureEqual(existing, desired) {
@@ -459,6 +515,9 @@ func compositeTemplatesStructureEqual(existing, desired []schedulingv1beta1.Comp
 }
 
 func compositePoliciesEqual(existing, desired *schedulingv1beta1.CompositePodGroupTemplate) bool {
+	if existing.PriorityClassName != desired.PriorityClassName {
+		return false
+	}
 	existingGang, desiredGang := existing.SchedulingPolicy.Gang, desired.SchedulingPolicy.Gang
 	if (existingGang == nil) != (desiredGang == nil) {
 		return false
@@ -483,6 +542,9 @@ func leafTemplatesStructureEqual(existing, desired []schedulingv1beta1.PodGroupT
 			return false
 		}
 		if (existing[i].SchedulingPolicy.Gang == nil) != (desiredTemplate.SchedulingPolicy.Gang == nil) {
+			return false
+		}
+		if existing[i].PriorityClassName != desiredTemplate.PriorityClassName {
 			return false
 		}
 		if !topologyConstraintsEqual(leafTopology(existing[i].SchedulingConstraints), leafTopology(desiredTemplate.SchedulingConstraints)) {
@@ -532,7 +594,7 @@ func (b *schedulerBackend) syncCompositePodGroups(ctx context.Context, podGang *
 			continue
 		}
 		childName := runtimeChildCompositePodGroupName(podGang, groupConfig.Name)
-		if err := b.ensureCompositePodGroup(ctx, podGang, materializer, childName, groupConfig.Name, ptr.To(rootName)); err != nil {
+		if err := b.ensureCompositePodGroup(ctx, podGang, materializer, childName, topologyGroupTemplateName(groupConfig.Name), ptr.To(rootName)); err != nil {
 			return err
 		}
 	}
@@ -545,6 +607,9 @@ func (b *schedulerBackend) ensureCompositePodGroup(ctx context.Context, podGang 
 	existing := &schedulingv1alpha3.CompositePodGroup{}
 	err := b.client.Get(ctx, client.ObjectKey{Namespace: podGang.Namespace, Name: name}, existing)
 	if err == nil {
+		if err := requirePodGangOwnership(existing, podGang, "CompositePodGroup"); err != nil {
+			return err
+		}
 		return nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -575,7 +640,7 @@ func (b *schedulerBackend) syncLeafPodGroups(ctx context.Context, podGang *grove
 			if !apierrors.IsNotFound(err) {
 				return fmt.Errorf("failed to get PodGroup %s/%s: %w", podGang.Namespace, groveGroup.Name, err)
 			}
-			podGroup, materializeErr := materializeLeafPodGroup(podGang, persistedWorkload, groveGroup.Name)
+			podGroup, materializeErr := materializeLeafPodGroup(podGang, persistedWorkload, groveGroup.Name, leafTemplateName(groveGroup.Name))
 			if materializeErr != nil {
 				return fmt.Errorf("failed to materialize PodGroup %s/%s: %w", podGang.Namespace, groveGroup.Name, materializeErr)
 			}
@@ -585,6 +650,10 @@ func (b *schedulerBackend) syncLeafPodGroups(ctx context.Context, podGang *grove
 				return fmt.Errorf("failed to create PodGroup %s/%s: %w", podGang.Namespace, groveGroup.Name, createErr)
 			}
 			continue
+		}
+
+		if err := requirePodGangOwnership(existing, podGang, "PodGroup"); err != nil {
+			return err
 		}
 
 		gang := existing.Spec.SchedulingPolicy.Gang
@@ -600,17 +669,44 @@ func (b *schedulerBackend) syncLeafPodGroups(ctx context.Context, podGang *grove
 	return nil
 }
 
-// deleteGeneratedGroups deletes all runtime CompositePodGroups and PodGroups
-// previously generated for the PodGang, identified by the grove.io/podgang label.
+// deleteGeneratedGroups deletes runtime groups generated for the PodGang.
+// Labels select candidates, and controller ownership prevents deleting foreign
+// objects that happen to carry the same label.
 func (b *schedulerBackend) deleteGeneratedGroups(ctx context.Context, podGang *groveschedulerv1alpha1.PodGang) error {
 	selector := client.MatchingLabels{apicommon.LabelPodGang: podGang.Name}
-	if err := b.client.DeleteAllOf(ctx, &schedulingv1beta1.PodGroup{}, client.InNamespace(podGang.Namespace), selector); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("failed to delete generated PodGroups for PodGang %s/%s: %w", podGang.Namespace, podGang.Name, err)
+	podGroups := &schedulingv1beta1.PodGroupList{}
+	if err := b.client.List(ctx, podGroups, client.InNamespace(podGang.Namespace), selector); err != nil {
+		return fmt.Errorf("failed to list generated PodGroups for PodGang %s/%s: %w", podGang.Namespace, podGang.Name, err)
 	}
-	if err := b.client.DeleteAllOf(ctx, &schedulingv1alpha3.CompositePodGroup{}, client.InNamespace(podGang.Namespace), selector); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("failed to delete generated CompositePodGroups for PodGang %s/%s: %w", podGang.Namespace, podGang.Name, err)
+	for i := range podGroups.Items {
+		if !metav1.IsControlledBy(&podGroups.Items[i], podGang) {
+			continue
+		}
+		if err := b.client.Delete(ctx, &podGroups.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete generated PodGroup %s/%s: %w", podGroups.Items[i].Namespace, podGroups.Items[i].Name, err)
+		}
+	}
+
+	compositePodGroups := &schedulingv1alpha3.CompositePodGroupList{}
+	if err := b.client.List(ctx, compositePodGroups, client.InNamespace(podGang.Namespace), selector); err != nil {
+		return fmt.Errorf("failed to list generated CompositePodGroups for PodGang %s/%s: %w", podGang.Namespace, podGang.Name, err)
+	}
+	for i := range compositePodGroups.Items {
+		if !metav1.IsControlledBy(&compositePodGroups.Items[i], podGang) {
+			continue
+		}
+		if err := b.client.Delete(ctx, &compositePodGroups.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete generated CompositePodGroup %s/%s: %w", compositePodGroups.Items[i].Namespace, compositePodGroups.Items[i].Name, err)
+		}
 	}
 	return nil
+}
+
+func requirePodGangOwnership(obj metav1.Object, podGang *groveschedulerv1alpha1.PodGang, kind string) error {
+	if metav1.IsControlledBy(obj, podGang) {
+		return nil
+	}
+	return fmt.Errorf("%s %s/%s is not controlled by PodGang %s/%s", kind, obj.GetNamespace(), obj.GetName(), podGang.Namespace, podGang.Name)
 }
 
 // runtimeRootCompositePodGroupName returns the name of the root runtime

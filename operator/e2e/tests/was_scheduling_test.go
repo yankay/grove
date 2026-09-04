@@ -19,16 +19,25 @@ package tests
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
+	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
+	"github.com/ai-dynamo/grove/operator/e2e/setup"
 	"github.com/ai-dynamo/grove/operator/e2e/testctx"
 
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+var (
+	enableWASGangSchedulingOnce sync.Once
+	enableWASGangSchedulingErr  error
 )
 
 // skipUnlessWASServed skips the test unless the cluster serves the upstream
@@ -49,19 +58,52 @@ func skipUnlessWASServed(t *testing.T, tc *testctx.TestContext) {
 	t.Fatalf("failed to probe Workload API: %v", err)
 }
 
+func enableWASGangScheduling(t *testing.T, tc *testctx.TestContext) {
+	t.Helper()
+	enableWASGangSchedulingOnce.Do(func() {
+		chartDir, err := setup.GetGroveChartDir()
+		if err != nil {
+			enableWASGangSchedulingErr = err
+			return
+		}
+		enableWASGangSchedulingErr = setup.UpdateGroveConfiguration(
+			tc.Ctx,
+			tc.Client.RestConfig,
+			chartDir,
+			&setup.GroveConfig{
+				Scheduler: &configv1alpha1.SchedulerConfiguration{
+					DefaultProfileName: string(configv1alpha1.SchedulerNameKube),
+					Profiles: []configv1alpha1.SchedulerProfile{
+						{
+							Name: configv1alpha1.SchedulerNameKube,
+							Config: &runtime.RawExtension{
+								Raw: []byte(`{"gangScheduling":true}`),
+							},
+						},
+					},
+				},
+			},
+			Logger,
+		)
+	})
+	if enableWASGangSchedulingErr != nil {
+		t.Fatalf("failed to enable default-scheduler gang scheduling: %v", enableWASGangSchedulingErr)
+	}
+}
+
 // Test_WAS1_HierarchyCreatedForPodGang is a positive test: deploying a
 // default-scheduler PodCliqueSet must produce an upstream Workload with a root
 // CompositePodGroup gang over per-clique leaf PodGroups, and all pods must be
 // gang-scheduled and become ready.
 //
 // Scenario WAS-1:
-// 1. Initialize a Grove cluster with the Workload-Aware Scheduling APIs served
-// 2. Deploy the was-gang PodCliqueSet (default-scheduler), verify 3 pods created
-// 3. Verify a Workload is created with a root CompositePodGroup gang whose
-//    minGroupCount spans the two per-clique leaf PodGroups
-// 4. Verify one runtime PodGroup per Grove PodGroup with the expected minCount
-// 5. Verify each pod is assigned to its leaf PodGroup via schedulingGroup
-// 6. Verify all pods are scheduled and become ready
+//  1. Initialize a Grove cluster with the Workload-Aware Scheduling APIs served
+//  2. Deploy the was-gang PodCliqueSet (default-scheduler), verify 3 pods created
+//  3. Verify a Workload is created with a root CompositePodGroup gang whose
+//     minGroupCount spans the two per-clique leaf PodGroups
+//  4. Verify one runtime PodGroup per Grove PodGroup with the expected minCount
+//  5. Verify each pod is assigned to its leaf PodGroup via schedulingGroup
+//  6. Verify all pods are scheduled and become ready
 func Test_WAS1_HierarchyCreatedForPodGang(t *testing.T) {
 	ctx := context.Background()
 
@@ -78,6 +120,7 @@ func Test_WAS1_HierarchyCreatedForPodGang(t *testing.T) {
 	defer cleanup()
 
 	skipUnlessWASServed(t, tc)
+	enableWASGangScheduling(t, tc)
 
 	Logger.Info("2. Deploy the was-gang PodCliqueSet, verify pods created")
 	if _, err := tc.DeployAndVerifyWorkload(); err != nil {
@@ -86,8 +129,9 @@ func Test_WAS1_HierarchyCreatedForPodGang(t *testing.T) {
 
 	Logger.Info("3. Verify the generated Workload hierarchy")
 	workloads := &schedulingv1beta1.WorkloadList{}
-	if err := tc.Client.List(ctx, workloads, client.InNamespace(tc.Namespace),
-		client.MatchingLabels{apicommon.LabelPartOfKey: "was-gang"}); err != nil {
+	err := tc.Client.List(ctx, workloads, client.InNamespace(tc.Namespace),
+		client.MatchingLabels{apicommon.LabelPartOfKey: "was-gang"})
+	if err != nil || len(workloads.Items) == 0 {
 		// Fall back to listing by the PodGang label if part-of is not propagated.
 		workloads = &schedulingv1beta1.WorkloadList{}
 		if err := tc.Client.List(ctx, workloads, client.InNamespace(tc.Namespace)); err != nil {
@@ -176,11 +220,11 @@ func Test_WAS1_HierarchyCreatedForPodGang(t *testing.T) {
 // schedule together.
 //
 // Scenario WAS-2:
-// 1. Initialize a Grove cluster with the Workload-Aware Scheduling APIs served,
-//    then cordon 1 node so the gang cannot fit
-// 2. Deploy the was-gang PodCliqueSet, verify pods created
-// 3. Verify all pods are pending (gang not admitted)
-// 4. Uncordon the node and verify all pods schedule together
+//  1. Initialize a Grove cluster with the Workload-Aware Scheduling APIs served,
+//     then cordon 1 node so the gang cannot fit
+//  2. Deploy the was-gang PodCliqueSet, verify pods created
+//  3. Verify all pods are pending (gang not admitted)
+//  4. Uncordon the node and verify all pods schedule together
 func Test_WAS2_GangHeldWhenInsufficientResources(t *testing.T) {
 	ctx := context.Background()
 
@@ -197,6 +241,7 @@ func Test_WAS2_GangHeldWhenInsufficientResources(t *testing.T) {
 	defer cleanup()
 
 	skipUnlessWASServed(t, tc)
+	enableWASGangScheduling(t, tc)
 
 	nodesToCordon := tc.SetupAndCordonNodes(1)
 
@@ -241,6 +286,7 @@ func Test_WAS3_PreferredTopologyRejected(t *testing.T) {
 	defer cleanup()
 
 	skipUnlessWASServed(t, tc)
+	enableWASGangScheduling(t, tc)
 
 	Logger.Info("2. Apply a default-scheduler PodCliqueSet with a preferred topology constraint")
 	_, err := tc.ApplyYAMLFile(tc.Workload.YAMLPath)
@@ -255,4 +301,3 @@ func Test_WAS3_PreferredTopologyRejected(t *testing.T) {
 
 	Logger.Info("🎉 WAS-3 preferred-topology-rejected test completed successfully!")
 }
-
