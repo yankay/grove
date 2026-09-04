@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	workloadbuilder "k8s.io/component-helpers/scheduling/schedulingv1/workloadbuilder"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -324,6 +325,188 @@ func TestSyncPodGang_RebuildsHierarchyOnStructureChange(t *testing.T) {
 
 	routerPodGroup := &schedulingv1beta1.PodGroup{}
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "test-pcs-0-router"}, routerPodGroup))
+}
+
+// TestValidateWorkloadLimits_Depth verifies the explicit tree-depth guard fails
+// closed once a template tree exceeds WorkloadMaxTreeDepth levels, independent
+// of how the tree was produced.
+func TestValidateWorkloadLimits_Depth(t *testing.T) {
+	podGang := newTestPodGang()
+
+	// Build a chain deeper than the allowed maximum: root -> c1 -> ... -> leaf.
+	leaf := &workloadbuilder.WorkloadItem{Name: "leaf"}
+	node := leaf
+	for i := 0; i < schedulingv1beta1.WorkloadMaxTreeDepth; i++ {
+		node = &workloadbuilder.WorkloadItem{Name: "node", Children: []*workloadbuilder.WorkloadItem{node}}
+	}
+
+	err := validateWorkloadLimits(podGang, node, 1)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "deeper than")
+
+	// A chain exactly at the limit passes.
+	withinLimit := &workloadbuilder.WorkloadItem{Name: "leaf"}
+	for i := 0; i < schedulingv1beta1.WorkloadMaxTreeDepth-1; i++ {
+		withinLimit = &workloadbuilder.WorkloadItem{Name: "node", Children: []*workloadbuilder.WorkloadItem{withinLimit}}
+	}
+	require.NoError(t, validateWorkloadLimits(podGang, withinLimit, 1))
+}
+
+// TestValidateWorkloadLimits_ChildWidth verifies the per-list template count
+// guard fails closed on a nested composite child, not just the root.
+func TestValidateWorkloadLimits_ChildWidth(t *testing.T) {
+	podGang := newTestPodGang()
+
+	children := make([]*workloadbuilder.WorkloadItem, 0, schedulingv1beta1.WorkloadMaxPodGroupTemplates+1)
+	for i := 0; i < schedulingv1beta1.WorkloadMaxPodGroupTemplates+1; i++ {
+		children = append(children, &workloadbuilder.WorkloadItem{Name: string(rune('a' + i))})
+	}
+	child := &workloadbuilder.WorkloadItem{Name: "tcg-a", Children: children}
+	root := &workloadbuilder.WorkloadItem{Name: rootTemplateName, Children: []*workloadbuilder.WorkloadItem{child}}
+
+	err := validateWorkloadLimits(podGang, root, 1)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "at most")
+}
+
+// TestBuildWorkloadForPodGang_TooManyGroupsForOneList verifies that too many
+// topology constraint groups under the root fail closed on the template-count
+// limit.
+func TestBuildWorkloadForPodGang_TooManyGroupsForOneList(t *testing.T) {
+	podGang := newTestPodGang(func(podGang *groveschedulerv1alpha1.PodGang) {
+		podGang.Spec.PodGroups = nil
+		for i := 0; i < schedulingv1beta1.WorkloadMaxPodGroupTemplates+1; i++ {
+			name := "grp" + string(rune('a'+i))
+			podGang.Spec.PodGroups = append(podGang.Spec.PodGroups, groveschedulerv1alpha1.PodGroup{Name: name, MinReplicas: 1})
+			withTopologyGroup("tcg-"+string(rune('a'+i)), []string{name}, "")(podGang)
+		}
+	})
+
+	_, err := buildWorkloadForPodGang(podGang, nil)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "at most")
+}
+
+// TestBuildWorkloadForPodGang_RootRequiredTopology verifies a required topology
+// constraint on the PodGang itself lands on the root composite template.
+func TestBuildWorkloadForPodGang_RootRequiredTopology(t *testing.T) {
+	podGang := newTestPodGang(func(podGang *groveschedulerv1alpha1.PodGang) {
+		podGang.Spec.TopologyConstraint = &groveschedulerv1alpha1.TopologyConstraint{
+			PackConstraint: &groveschedulerv1alpha1.TopologyPackConstraint{Required: ptr.To("topology.kubernetes.io/zone")},
+		}
+	})
+
+	workload, err := buildWorkloadForPodGang(podGang, nil)
+	require.NoError(t, err)
+
+	root := workload.Spec.CompositePodGroupTemplates[0]
+	require.NotNil(t, root.SchedulingConstraints)
+	require.Len(t, root.SchedulingConstraints.Topology, 1)
+	assert.Equal(t, "topology.kubernetes.io/zone", root.SchedulingConstraints.Topology[0].Key)
+}
+
+// TestBuildWorkloadForPodGang_NestedTopologyLevels verifies TAS constraints at
+// all three levels (root PodGang, topology group, leaf PodGroup) map to the
+// corresponding template level, resolved parent-to-child.
+func TestBuildWorkloadForPodGang_NestedTopologyLevels(t *testing.T) {
+	podGang := newTestPodGang(
+		func(podGang *groveschedulerv1alpha1.PodGang) {
+			podGang.Spec.TopologyConstraint = &groveschedulerv1alpha1.TopologyConstraint{
+				PackConstraint: &groveschedulerv1alpha1.TopologyPackConstraint{Required: ptr.To("topology.kubernetes.io/zone")},
+			}
+			podGang.Spec.PodGroups[0].TopologyConstraint = &groveschedulerv1alpha1.TopologyConstraint{
+				PackConstraint: &groveschedulerv1alpha1.TopologyPackConstraint{Required: ptr.To("kubernetes.io/hostname")},
+			}
+		},
+		withTopologyGroup("tcg-a", []string{"test-pcs-0-prefill"}, "topology.kubernetes.io/rack"),
+	)
+
+	workload, err := buildWorkloadForPodGang(podGang, nil)
+	require.NoError(t, err)
+
+	root := workload.Spec.CompositePodGroupTemplates[0]
+	require.NotNil(t, root.SchedulingConstraints)
+	require.Len(t, root.SchedulingConstraints.Topology, 1)
+	assert.Equal(t, "topology.kubernetes.io/zone", root.SchedulingConstraints.Topology[0].Key, "root carries the PodGang constraint")
+
+	require.Len(t, root.CompositePodGroupTemplates, 1)
+	group := root.CompositePodGroupTemplates[0]
+	require.NotNil(t, group.SchedulingConstraints)
+	require.Len(t, group.SchedulingConstraints.Topology, 1)
+	assert.Equal(t, "topology.kubernetes.io/rack", group.SchedulingConstraints.Topology[0].Key, "child carries the topology group constraint")
+
+	require.Len(t, group.PodGroupTemplates, 1)
+	leaf := group.PodGroupTemplates[0]
+	assert.Equal(t, "test-pcs-0-prefill", leaf.Name)
+	require.NotNil(t, leaf.SchedulingConstraints)
+	require.Len(t, leaf.SchedulingConstraints.Topology, 1)
+	assert.Equal(t, "kubernetes.io/hostname", leaf.SchedulingConstraints.Topology[0].Key, "leaf carries the PodGroup constraint")
+}
+
+// TestBuildWorkloadForPodGang_PreferredFailsClosedAtEveryLevel verifies a
+// preferred topology constraint fails closed whether it is set on the PodGang,
+// a topology group, or a PodGroup.
+func TestBuildWorkloadForPodGang_PreferredFailsClosedAtEveryLevel(t *testing.T) {
+	preferred := func() *groveschedulerv1alpha1.TopologyConstraint {
+		return &groveschedulerv1alpha1.TopologyConstraint{
+			PackConstraint: &groveschedulerv1alpha1.TopologyPackConstraint{Preferred: ptr.To("kubernetes.io/hostname")},
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*groveschedulerv1alpha1.PodGang)
+	}{
+		{
+			name: "on PodGang",
+			mutate: func(podGang *groveschedulerv1alpha1.PodGang) {
+				podGang.Spec.TopologyConstraint = preferred()
+			},
+		},
+		{
+			name: "on PodGroup",
+			mutate: func(podGang *groveschedulerv1alpha1.PodGang) {
+				podGang.Spec.PodGroups[0].TopologyConstraint = preferred()
+			},
+		},
+		{
+			name: "on topology group",
+			mutate: func(podGang *groveschedulerv1alpha1.PodGang) {
+				podGang.Spec.TopologyConstraintGroupConfigs = append(podGang.Spec.TopologyConstraintGroupConfigs,
+					groveschedulerv1alpha1.TopologyConstraintGroupConfig{
+						Name:               "tcg-a",
+						PodGroupNames:      []string{"test-pcs-0-prefill"},
+						TopologyConstraint: preferred(),
+					})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := buildWorkloadForPodGang(newTestPodGang(tt.mutate), nil)
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "preferred topology constraint")
+		})
+	}
+}
+
+// TestSyncPodGang_RootCompositeCarriesTopology verifies the runtime root
+// CompositePodGroup materialized from a PodGang with a required topology
+// constraint carries that constraint.
+func TestSyncPodGang_RootCompositeCarriesTopology(t *testing.T) {
+	podGang := newTestPodGang(func(podGang *groveschedulerv1alpha1.PodGang) {
+		podGang.Spec.TopologyConstraint = &groveschedulerv1alpha1.TopologyConstraint{
+			PackConstraint: &groveschedulerv1alpha1.TopologyPackConstraint{Required: ptr.To("topology.kubernetes.io/zone")},
+		}
+	})
+	backend, cl := newGangBackend(t, podGang)
+	ctx := context.Background()
+	require.NoError(t, backend.SyncPodGang(ctx, podGang))
+
+	rootComposite := &schedulingv1alpha3.CompositePodGroup{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: testPodGangName}, rootComposite))
+	require.NotNil(t, rootComposite.Spec.SchedulingConstraints)
+	require.Len(t, rootComposite.Spec.SchedulingConstraints.Topology, 1)
+	assert.Equal(t, "topology.kubernetes.io/zone", rootComposite.Spec.SchedulingConstraints.Topology[0].Key)
 }
 
 func TestSyncPodGang_NoOpWithoutGangScheduling(t *testing.T) {

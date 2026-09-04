@@ -88,7 +88,7 @@ func (b *schedulerBackend) Init(directClient client.Client) error {
 	}
 
 	if err := verifyWorkloadAPIsServed(directClient); err != nil {
-		return fmt.Errorf("default-scheduler gang scheduling requires the Kubernetes Workload-Aware Scheduling APIs (Kubernetes >= 1.37 with the GenericWorkload and CompositePodGroup feature gates enabled on kube-apiserver and kube-scheduler): %w", err)
+		return fmt.Errorf("default-scheduler gang scheduling requires the Kubernetes Workload-Aware Scheduling APIs (Kubernetes >= 1.37 with the GenericWorkload feature gate enabled on kube-apiserver, kube-scheduler, and kube-controller-manager, plus the CompositePodGroup and TopologyAwareWorkloadScheduling feature gates enabled on kube-apiserver and kube-scheduler): %w", err)
 	}
 	b.gangSchedulingEnabled = true
 	return nil
