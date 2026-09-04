@@ -132,6 +132,23 @@ rules:
   - patch
   - update
   - watch
+{{- if include "grove.scheduler.kubeGangSchedulingEnabled" . }}
+- apiGroups:
+  - scheduling.k8s.io
+  resources:
+  - workloads
+  - podgroups
+  - compositepodgroups
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - patch
+  - update
+  - delete
+  - deletecollection
+{{- end }}
 {{- if include "grove.scheduler.hasProfile" (list . "kai-scheduler") }}
 - apiGroups:
   - kai.scheduler

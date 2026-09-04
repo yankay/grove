@@ -110,6 +110,12 @@ config:
   scheduler:
     profiles:
       - name: default-scheduler
+      # Enable gang scheduling via the Kubernetes Workload-Aware Scheduling APIs
+      # (requires Kubernetes >= 1.37 with the GenericWorkload and CompositePodGroup
+      # feature gates enabled on kube-apiserver and kube-scheduler):
+      # - name: default-scheduler
+      #   config:
+      #     gangScheduling: true
       - name: kai-scheduler
       # Uncomment optional scheduler profiles only when their dependencies are installed.
       # - name: volcano

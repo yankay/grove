@@ -39,7 +39,8 @@ config.yaml: |
     {{- range .Values.config.scheduler.profiles }}
     - name: {{ .name }}
       {{- if hasKey . "config" }}
-      config: {{ toYaml .config | nindent 4 }}
+      config:
+        {{- toYaml .config | nindent 8 }}
       {{- end }}
     {{- end }}
   {{- end }}
@@ -94,6 +95,13 @@ release: "{{ .Release.Name }}"
 {{- $profile := index . 1 -}}
 {{- range $root.Values.config.scheduler.profiles -}}
 {{- if eq .name $profile -}}true{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Returns "true" if the default-scheduler profile has gang scheduling enabled, empty string otherwise. */}}
+{{- define "grove.scheduler.kubeGangSchedulingEnabled" -}}
+{{- range .Values.config.scheduler.profiles -}}
+{{- if and (eq .name "default-scheduler") .config .config.gangScheduling -}}true{{- end -}}
 {{- end -}}
 {{- end -}}
 
