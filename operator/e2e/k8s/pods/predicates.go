@@ -27,6 +27,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const (
+	defaultSchedulerComponent = "default-scheduler"
+	failedSchedulingReason    = "FailedScheduling"
+	kaiSchedulerComponent     = "kai-scheduler"
+	podGrouperComponent       = "pod-grouper"
+	podGrouperWarningReason   = "PodGrouperWarning"
+	unschedulableReason       = "Unschedulable"
+)
+
 // FetchFunc returns a FetchFunc that lists pods in the given namespace with the given label selector.
 func (pm *PodManager) FetchFunc(ctx context.Context, namespace, labelSelector string) waiter.FetchFunc[*v1.PodList] {
 	return func(_ context.Context) (*v1.PodList, error) {
@@ -131,10 +140,7 @@ func HasUnschedulableEvents(ctx context.Context, cl client.Reader, namespace str
 					mostRecentEvent = event
 				}
 			}
-			if mostRecentEvent != nil &&
-				mostRecentEvent.Type == v1.EventTypeWarning &&
-				((mostRecentEvent.Reason == "Unschedulable" && mostRecentEvent.Source.Component == "kai-scheduler") ||
-					(mostRecentEvent.Reason == "PodGrouperWarning" && mostRecentEvent.Source.Component == "pod-grouper")) {
+			if mostRecentEvent != nil && isUnschedulableEvent(mostRecentEvent) {
 				podsWithUnschedulableEvent++
 			}
 		}
@@ -142,5 +148,21 @@ func HasUnschedulableEvents(ctx context.Context, cl client.Reader, namespace str
 			return false
 		}
 		return podsWithUnschedulableEvent == pendingCount
+	}
+}
+
+func isUnschedulableEvent(event *v1.Event) bool {
+	if event.Type != v1.EventTypeWarning {
+		return false
+	}
+	switch event.Source.Component {
+	case defaultSchedulerComponent:
+		return event.Reason == failedSchedulingReason
+	case kaiSchedulerComponent:
+		return event.Reason == unschedulableReason
+	case podGrouperComponent:
+		return event.Reason == podGrouperWarningReason
+	default:
+		return false
 	}
 }
