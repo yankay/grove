@@ -171,7 +171,7 @@ func workloadItemTreeForPodGang(podGang *groveschedulerv1alpha1.PodGang, fallbac
 		},
 		Children: rootChildren,
 	}
-	if err := validateWorkloadLimits(podGang, root); err != nil {
+	if err := validateWorkloadLimits(podGang, root, 1); err != nil {
 		return nil, err
 	}
 	return root, nil
@@ -179,14 +179,20 @@ func workloadItemTreeForPodGang(podGang *groveschedulerv1alpha1.PodGang, fallbac
 
 // validateWorkloadLimits fails closed when the generated tree exceeds the
 // upstream Workload API limits: at most WorkloadMaxPodGroupTemplates entries
-// per template list. The generated hierarchy is at most 3 levels deep (root,
-// topology group, leaf), within WorkloadMaxTreeDepth.
-func validateWorkloadLimits(podGang *groveschedulerv1alpha1.PodGang, item *workloadbuilder.WorkloadItem) error {
+// per template list, and at most WorkloadMaxTreeDepth levels deep. Grove's own
+// translation keeps the tree at most 3 levels (root, topology group, leaf), but
+// the depth check is enforced explicitly so future mappings still fail closed
+// rather than producing a Workload the API server rejects. depth is the 1-based
+// level of item within the tree (the root is at depth 1).
+func validateWorkloadLimits(podGang *groveschedulerv1alpha1.PodGang, item *workloadbuilder.WorkloadItem, depth int) error {
+	if depth > schedulingv1beta1.WorkloadMaxTreeDepth {
+		return fmt.Errorf("PodGang %s/%s maps to a template tree deeper than %d levels at group %q; the %s Workload API supports at most %d levels", podGang.Namespace, podGang.Name, schedulingv1beta1.WorkloadMaxTreeDepth, item.Name, schedulingv1beta1.SchemeGroupVersion.String(), schedulingv1beta1.WorkloadMaxTreeDepth)
+	}
 	if len(item.Children) > schedulingv1beta1.WorkloadMaxPodGroupTemplates {
 		return fmt.Errorf("PodGang %s/%s group %q maps to %d child templates; the %s Workload API supports at most %d templates per group", podGang.Namespace, podGang.Name, item.Name, len(item.Children), schedulingv1beta1.SchemeGroupVersion.String(), schedulingv1beta1.WorkloadMaxPodGroupTemplates)
 	}
 	for _, child := range item.Children {
-		if err := validateWorkloadLimits(podGang, child); err != nil {
+		if err := validateWorkloadLimits(podGang, child, depth+1); err != nil {
 			return err
 		}
 	}
