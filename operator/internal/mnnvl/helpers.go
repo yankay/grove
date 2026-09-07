@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
+	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/constants"
 
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +34,30 @@ const (
 	groupWithdrawn                    // annotation set to "none" — explicitly not enrolled
 	groupEnrolled                     // annotation set to a group name — enrolled
 )
+
+// GroupSourceKind identifies the annotation layer that supplied an effective MNNVL group.
+type GroupSourceKind int
+
+const (
+	// GroupSourcePCS identifies a group inherited from PodCliqueSet metadata.
+	GroupSourcePCS GroupSourceKind = iota
+	// GroupSourcePCSG identifies a group inherited from a PodCliqueScalingGroup config.
+	GroupSourcePCSG
+	// GroupSourcePCLQ identifies a group set on a PodClique template.
+	GroupSourcePCLQ
+)
+
+// GroupSource identifies the annotation that supplied an effective MNNVL group.
+type GroupSource struct {
+	Kind  GroupSourceKind
+	Index int
+}
+
+// RequiredGroup describes an MNNVL group that requires a ComputeDomain.
+type RequiredGroup struct {
+	Name   string
+	Source GroupSource
+}
 
 // ValidateMNNVLGroupName validates that the given string is a valid mnnvl-group
 // annotation value. The value must be either "none" (opt-out) or a valid
@@ -80,10 +105,92 @@ func ResolveGroupNameHierarchically(annotationLayers ...map[string]string) (stri
 	return "", false
 }
 
+// CollectRequiredGroups returns the distinct effective MNNVL groups used by GPU
+// PodCliques. Lower-level annotations override higher-level annotations.
+func CollectRequiredGroups(pcs *grovecorev1alpha1.PodCliqueSet) map[string]RequiredGroup {
+	groups := make(map[string]RequiredGroup)
+	pcsgByClique := buildPCSGLookup(pcs)
+
+	for cliqueIndex, clique := range pcs.Spec.Template.Cliques {
+		if clique == nil || !HasGPUInPodSpec(&clique.Spec.PodSpec) {
+			continue
+		}
+
+		layers := []groupLayer{{
+			annotations: clique.Annotations,
+			source:      GroupSource{Kind: GroupSourcePCLQ, Index: cliqueIndex},
+		}}
+		if pcsg, ok := pcsgByClique[clique.Name]; ok {
+			layers = append(layers, groupLayer{
+				annotations: pcsg.annotations,
+				source:      GroupSource{Kind: GroupSourcePCSG, Index: pcsg.index},
+			})
+		}
+		layers = append(layers, groupLayer{
+			annotations: pcs.Annotations,
+			source:      GroupSource{Kind: GroupSourcePCS},
+		})
+
+		group, ok := resolveRequiredGroup(layers)
+		if !ok {
+			continue
+		}
+		if _, exists := groups[group.Name]; !exists {
+			groups[group.Name] = group
+		}
+	}
+
+	return groups
+}
+
+type groupLayer struct {
+	annotations map[string]string
+	source      GroupSource
+}
+
+func resolveRequiredGroup(layers []groupLayer) (RequiredGroup, bool) {
+	for _, layer := range layers {
+		value, exists := layer.annotations[AnnotationMNNVLGroup]
+		if !exists {
+			continue
+		}
+		if value == AnnotationMNNVLGroupOptOut {
+			return RequiredGroup{}, false
+		}
+		return RequiredGroup{Name: value, Source: layer.source}, true
+	}
+	return RequiredGroup{}, false
+}
+
+type pcsgGroupSource struct {
+	annotations map[string]string
+	index       int
+}
+
+func buildPCSGLookup(pcs *grovecorev1alpha1.PodCliqueSet) map[string]pcsgGroupSource {
+	lookup := make(map[string]pcsgGroupSource)
+	for i := range pcs.Spec.Template.PodCliqueScalingGroupConfigs {
+		pcsg := &pcs.Spec.Template.PodCliqueScalingGroupConfigs[i]
+		for _, cliqueName := range pcsg.CliqueNames {
+			lookup[cliqueName] = pcsgGroupSource{
+				annotations: pcsg.Annotations,
+				index:       i,
+			}
+		}
+	}
+	return lookup
+}
+
+// GenerateComputeDomainName creates the ComputeDomain name for a PCS replica.
+// Format: {pcs-name}-{replica-index}-{group-name}.
+func GenerateComputeDomainName(pcsNameReplica apicommon.ResourceNameReplica, groupName string) string {
+	return fmt.Sprintf("%s-%d-%s", pcsNameReplica.Name, pcsNameReplica.Replica, groupName)
+}
+
 // GenerateRCTName creates the ResourceClaimTemplate name for a PCS replica.
 // Format: {pcs-name}-{replica-index}-{group-name}.
 func GenerateRCTName(pcsNameReplica apicommon.ResourceNameReplica, groupName string) string {
-	return fmt.Sprintf("%s-%d-%s", pcsNameReplica.Name, pcsNameReplica.Replica, groupName)
+	return GenerateComputeDomainName(pcsNameReplica, groupName)
 }
 
 // HasGPUInPodSpec checks if any container in the PodSpec requests GPU resources.

@@ -101,6 +101,13 @@ For PodCliques in a PCSG, the final pod name is:
 5. **Unique PodClique Names Within a PodCliqueSet**: All PodClique names must be unique within a PodCliqueSet. We explain the rationale for this further in the [Hands-On Example](./03_hands-on-example.md#why-unique-podclique-names-matter).
    - If you have leader/worker patterns in multiple PCSGs, you **must** use different names (e.g., `pleader`/`pworker` and `dleader`/`dworker`)
 
+6. **Avoid Generated-Name Collisions**: Different template paths can flatten to the same generated name when user-controlled names contain replica-like segments.
+   - For example, standalone PodClique `group-0-worker` collides with PodClique `worker` in PCSG `group` at replica 0.
+   - Grove admission checks configured and autoscaling replica ranges, validates Pod hostnames and generated names copied into labels, and rejects collisions between generated PodClique, Pod hostname, HPA, PodGang, ResourceClaim, and KAI subgroup names.
+   - User-defined `podSpec.resourceClaims[].name` aliases must not match aliases injected by resource sharing.
+   - `mnnvl-claim` is reserved for Auto-MNNVL on enrolled GPU PodCliques.
+   - Grove-reserved environment variables and startup-order init container and volume names cannot be reused in affected PodClique templates.
+
 ### Example: Planning Names for a Complex System
 
 Let's plan names for a multi-node disaggregated inference system with a frontend:

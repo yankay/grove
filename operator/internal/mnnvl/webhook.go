@@ -16,10 +16,14 @@ package mnnvl
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
+	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	kubeutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
@@ -31,6 +35,9 @@ func ValidatePCSOnCreate(pcs *grovecorev1alpha1.PodCliqueSet, autoMNNVLEnabled b
 	allErrs := field.ErrorList{}
 	allErrs = append(allErrs, validateMetadataOnCreate(pcs, autoMNNVLEnabled)...)
 	allErrs = append(allErrs, validateSpecOnCreate(pcs, autoMNNVLEnabled)...)
+	if autoMNNVLEnabled {
+		allErrs = append(allErrs, validateComputeDomainNames(pcs)...)
+	}
 	return allErrs
 }
 
@@ -40,6 +47,29 @@ func ValidatePCSOnUpdate(oldPCS, newPCS *grovecorev1alpha1.PodCliqueSet) field.E
 	allErrs := field.ErrorList{}
 	allErrs = append(allErrs, validateMetadataOnUpdate(oldPCS, newPCS)...)
 	allErrs = append(allErrs, validateSpecOnUpdate(oldPCS, newPCS)...)
+	return allErrs
+}
+
+// ValidateComputeDomainNamesOnUpdate rejects newly invalid ComputeDomain label
+// values while allowing unchanged legacy violations on non-scaling updates.
+func ValidateComputeDomainNamesOnUpdate(oldPCS, newPCS *grovecorev1alpha1.PodCliqueSet, autoMNNVLEnabled bool) field.ErrorList {
+	if !autoMNNVLEnabled {
+		return nil
+	}
+
+	oldChecks := indexComputeDomainNameChecks(buildComputeDomainNameChecks(oldPCS))
+	replicasIncreased := newPCS.Spec.Replicas > oldPCS.Spec.Replicas
+	var allErrs field.ErrorList
+	for _, check := range buildComputeDomainNameChecks(newPCS) {
+		if len(check.errors) == 0 {
+			continue
+		}
+		oldCheck, exists := oldChecks[check.key]
+		if exists && len(oldCheck.errors) > 0 && !replicasIncreased {
+			continue
+		}
+		allErrs = append(allErrs, computeDomainNameError(check))
+	}
 	return allErrs
 }
 
@@ -159,4 +189,84 @@ var mnnvlImmutableKeys = []string{AnnotationMNNVLGroup}
 
 func validateMNNVLAnnotationsImmutability(oldAnnotations, newAnnotations map[string]string, basePath *field.Path) field.ErrorList {
 	return kubeutils.ValidateAnnotationsImmutability(oldAnnotations, newAnnotations, mnnvlImmutableKeys, basePath)
+}
+
+type computeDomainNameCheck struct {
+	key       string
+	fieldPath *field.Path
+	name      string
+	errors    []string
+}
+
+func validateComputeDomainNames(pcs *grovecorev1alpha1.PodCliqueSet) field.ErrorList {
+	var allErrs field.ErrorList
+	for _, check := range buildComputeDomainNameChecks(pcs) {
+		if len(check.errors) > 0 {
+			allErrs = append(allErrs, computeDomainNameError(check))
+		}
+	}
+	return allErrs
+}
+
+func buildComputeDomainNameChecks(pcs *grovecorev1alpha1.PodCliqueSet) []computeDomainNameCheck {
+	replicaIndex := 0
+	if pcs.Spec.Replicas > 1 {
+		replicaIndex = int(pcs.Spec.Replicas - 1)
+	}
+
+	groups := CollectRequiredGroups(pcs)
+	checks := make([]computeDomainNameCheck, 0, len(groups))
+	groupNames := make([]string, 0, len(groups))
+	for groupName := range groups {
+		groupNames = append(groupNames, groupName)
+	}
+	sort.Strings(groupNames)
+	for _, groupName := range groupNames {
+		group := groups[groupName]
+		name := GenerateComputeDomainName(
+			apicommon.ResourceNameReplica{Name: pcs.Name, Replica: replicaIndex},
+			groupName,
+		)
+		checks = append(checks, computeDomainNameCheck{
+			key:       groupName,
+			fieldPath: groupSourceFieldPath(group.Source),
+			name:      name,
+			errors:    k8svalidation.IsValidLabelValue(name),
+		})
+	}
+	return checks
+}
+
+func groupSourceFieldPath(source GroupSource) *field.Path {
+	switch source.Kind {
+	case GroupSourcePCSG:
+		return field.NewPath("spec", "template", "podCliqueScalingGroups").
+			Index(source.Index).
+			Child("annotations", AnnotationMNNVLGroup)
+	case GroupSourcePCLQ:
+		return field.NewPath("spec", "template", "cliques").
+			Index(source.Index).
+			Child("annotations", AnnotationMNNVLGroup)
+	default:
+		return field.NewPath("metadata", "annotations", AnnotationMNNVLGroup)
+	}
+}
+
+func computeDomainNameError(check computeDomainNameCheck) *field.Error {
+	return field.Invalid(
+		check.fieldPath,
+		check.name,
+		fmt.Sprintf(
+			"generated ComputeDomain name must be a valid label value because it is used as app.kubernetes.io/name: %s",
+			strings.Join(check.errors, "; "),
+		),
+	)
+}
+
+func indexComputeDomainNameChecks(checks []computeDomainNameCheck) map[string]computeDomainNameCheck {
+	result := make(map[string]computeDomainNameCheck, len(checks))
+	for _, check := range checks {
+		result[check.key] = check
+	}
+	return result
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
+	internalconstants "github.com/ai-dynamo/grove/operator/internal/constants"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler/lpx"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
@@ -49,7 +50,7 @@ func TestAddServiceAccountTokenSecretVolumeUsesShortSecretName(t *testing.T) {
 
 	assert.Len(t, pod.Spec.Volumes, 1)
 	volume := pod.Spec.Volumes[0]
-	assert.Equal(t, serviceAccountTokenSecretVolumeName, volume.Name)
+	assert.Equal(t, internalconstants.StartupServiceAccountTokenVolumeName, volume.Name)
 	if assert.NotNil(t, volume.Secret) {
 		expectedSecretName := common.GenerateInitContainerSATokenSecretName(pcsName)
 		assert.Equal(t, expectedSecretName, volume.Secret.SecretName)

@@ -23,6 +23,7 @@ import (
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -143,6 +144,64 @@ func TestResolveGroupNameHierarchically(t *testing.T) {
 	}
 }
 
+func TestCollectRequiredGroups(t *testing.T) {
+	t.Run("reports the effective annotation source", func(t *testing.T) {
+		pcs := createPCSWithGPU(map[string]string{AnnotationMNNVLGroup: "pcs-group"})
+		pcs.Spec.Template.PodCliqueScalingGroupConfigs = []grovecorev1alpha1.PodCliqueScalingGroupConfig{{
+			Name:        "group",
+			CliqueNames: []string{"worker"},
+			Annotations: map[string]string{AnnotationMNNVLGroup: "pcsg-group"},
+		}}
+		pcs.Spec.Template.Cliques[0].Annotations = map[string]string{AnnotationMNNVLGroup: "pclq-group"}
+
+		groups := CollectRequiredGroups(pcs)
+		require.Len(t, groups, 1)
+		assert.Equal(t, RequiredGroup{
+			Name:   "pclq-group",
+			Source: GroupSource{Kind: GroupSourcePCLQ, Index: 0},
+		}, groups["pclq-group"])
+	})
+
+	t.Run("inherits from PCSG then PCS", func(t *testing.T) {
+		pcs := createPCSWithGPU(map[string]string{AnnotationMNNVLGroup: "pcs-group"})
+		pcs.Spec.Template.PodCliqueScalingGroupConfigs = []grovecorev1alpha1.PodCliqueScalingGroupConfig{{
+			Name:        "group",
+			CliqueNames: []string{"worker"},
+			Annotations: map[string]string{AnnotationMNNVLGroup: "pcsg-group"},
+		}}
+
+		groups := CollectRequiredGroups(pcs)
+		assert.Equal(t, GroupSource{Kind: GroupSourcePCSG, Index: 0}, groups["pcsg-group"].Source)
+
+		pcs.Spec.Template.PodCliqueScalingGroupConfigs[0].Annotations = nil
+		groups = CollectRequiredGroups(pcs)
+		assert.Equal(t, GroupSource{Kind: GroupSourcePCS}, groups["pcs-group"].Source)
+	})
+
+	t.Run("deduplicates groups and honors opt-out and GPU filtering", func(t *testing.T) {
+		pcs := createPCSWithGPU(map[string]string{AnnotationMNNVLGroup: "shared"})
+		secondGPUClique := pcs.Spec.Template.Cliques[0].DeepCopy()
+		secondGPUClique.Name = "worker-2"
+		cpuClique := createPCSWithNonGPUCliqueAnnotations(nil).Spec.Template.Cliques[0]
+		cpuClique.Annotations = map[string]string{AnnotationMNNVLGroup: "cpu-only"}
+		optedOutClique := pcs.Spec.Template.Cliques[0].DeepCopy()
+		optedOutClique.Name = "worker-3"
+		optedOutClique.Annotations = map[string]string{AnnotationMNNVLGroup: AnnotationMNNVLGroupOptOut}
+		pcs.Spec.Template.Cliques = append(pcs.Spec.Template.Cliques, secondGPUClique, cpuClique, optedOutClique)
+
+		groups := CollectRequiredGroups(pcs)
+		require.Len(t, groups, 1)
+		assert.Contains(t, groups, "shared")
+	})
+
+	t.Run("preserves controller behavior for legacy invalid values", func(t *testing.T) {
+		pcs := createPCSWithGPU(map[string]string{AnnotationMNNVLGroup: "Legacy_Invalid"})
+		groups := CollectRequiredGroups(pcs)
+		require.Len(t, groups, 1)
+		assert.Contains(t, groups, "Legacy_Invalid")
+	})
+}
+
 func TestGenerateRCTName(t *testing.T) {
 	tests := []struct {
 		description    string
@@ -188,6 +247,14 @@ func TestGenerateRCTName(t *testing.T) {
 			assert.Equal(t, tc.expected, result)
 		})
 	}
+}
+
+func TestGenerateComputeDomainName(t *testing.T) {
+	assert.Equal(
+		t,
+		"training-5-encoders",
+		GenerateComputeDomainName(apicommon.ResourceNameReplica{Name: "training", Replica: 5}, "encoders"),
+	)
 }
 
 func TestValidateMNNVLGroupName(t *testing.T) {
