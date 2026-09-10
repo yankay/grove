@@ -32,6 +32,7 @@ import (
 	"github.com/ai-dynamo/grove/operator/e2e/setup"
 	"github.com/ai-dynamo/grove/operator/e2e/testctx"
 	internalconstants "github.com/ai-dynamo/grove/operator/internal/constants"
+	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -126,12 +127,15 @@ func Test_ZR2_StandaloneLifecycle(t *testing.T) {
 	}, 1)
 	waitForPodCountAndReady(t, tc, 1)
 	waitForStandaloneMembership(t, ctx, tc, pcsName, "worker", 1)
-	if wakeEpoch := maxPGMEpoch(t, ctx, tc, pcsName); wakeEpoch <= initialEpoch {
-		t.Fatalf("wake epoch = %d, want greater than initial epoch %d", wakeEpoch, initialEpoch)
+	if wakeEpoch := maxPGMEpoch(t, ctx, tc, pcsName); wakeEpoch != initialEpoch {
+		t.Fatalf("standalone wake changed anchor epoch: %d -> %d", initialEpoch, wakeEpoch)
 	}
-	for name := range podGangNameSet(t, ctx, tc, pcsName) {
-		if initialPodGangs.Has(name) {
-			t.Fatalf("wake reused materialized PodGang %s", name)
+	if names := podGangNameSet(t, ctx, tc, pcsName); !reflect.DeepEqual(initialPodGangs, names) {
+		t.Fatalf("standalone wake changed anchor names: %v -> %v", initialPodGangs, names)
+	}
+	for _, pod := range podsForClique(t, tc, workerName) {
+		if _, existed := initialLocations[pod.UID]; existed {
+			t.Fatalf("standalone wake retained an old pod %s", pod.Name)
 		}
 	}
 
@@ -151,6 +155,7 @@ func Test_ZR3_PodCliqueScalingGroupLifecycle(t *testing.T) {
 	tc, cleanup := prepareIdleWorkload(t, ctx, 6, pcsName, 0, func(pcs *grovecorev1alpha1.PodCliqueSet) {
 		config := idlePCSGConfig(t, pcs)
 		config.Replicas = ptr.To(int32(3))
+		config.MinAvailable = ptr.To(int32(2))
 	})
 	defer cleanup()
 
@@ -165,10 +170,10 @@ func Test_ZR3_PodCliqueScalingGroupLifecycle(t *testing.T) {
 
 	updateScale(t, ctx, tc, &grovecorev1alpha1.PodCliqueScalingGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: pcsgName, Namespace: tc.Namespace},
-	}, 1)
-	waitForPodCountAndReady(t, tc, 2)
-	waitForPCSGMembership(t, ctx, tc, pcsName, "workers", []int32{0})
-	waitForPCSGChildrenAbsent(t, ctx, tc, pcsgName, 1, 2)
+	}, 2)
+	waitForPodCountAndReady(t, tc, 4)
+	waitForPCSGMembership(t, ctx, tc, pcsName, "workers", []int32{0, 1})
+	waitForPCSGChildrenAbsent(t, ctx, tc, pcsgName, 2)
 	assertPCLQUIDs(t, ctx, tc, retainedPCLQUIDs)
 	assertRetainedPodLocation(t, podsForPCSGIndex(t, tc, "0"), retainedPodLocations)
 
@@ -183,6 +188,33 @@ func Test_ZR3_PodCliqueScalingGroupLifecycle(t *testing.T) {
 	}, 2)
 	waitForPodCountAndReady(t, tc, 4)
 	waitForPCSGMembership(t, ctx, tc, pcsName, "workers", []int32{0, 1})
+	pgm := getPGM(t, ctx, tc, pcsName, 0)
+	var scaleOutEpoch string
+	for _, entry := range pgm.Spec.Entries {
+		if entry.Role == grovecorev1alpha1.PodGangEntryRoleAnchor && len(entry.PCSGReplicaIndices) != 0 {
+			t.Fatal("PCSG wake restored cross-replica anchor membership")
+		}
+		if entry.Role == grovecorev1alpha1.PodGangEntryRoleScaleOut {
+			if !slices.Equal(entry.PCSGReplicaIndices["workers"], []int32{0, 1}) || len(entry.DependsOn) != 0 {
+				t.Fatalf("unexpected PCSG-only wake entry: %+v", entry)
+			}
+			scaleOutEpoch = entry.Epoch
+		}
+	}
+	if scaleOutEpoch == "" {
+		t.Fatal("PCSG wake has no ScaleOut entry")
+	}
+	wokenNames := podGangNameSet(t, ctx, tc, pcsName)
+	if len(wokenNames) != 2 {
+		t.Fatalf("PCSG wake created %d PodGangs, want one per replica", len(wokenNames))
+	}
+	for index := range 2 {
+		name := apicommon.GenerateNonAnchorPodGangName(
+			apicommon.ResourceNameReplica{Name: pcsName, Replica: 0}, scaleOutEpoch, "workers", int32(index))
+		if !wokenNames.Has(name) {
+			t.Fatalf("missing scaled PodGang %s", name)
+		}
+	}
 	for name := range podGangNameSet(t, ctx, tc, pcsName) {
 		if initialPodGangs.Has(name) {
 			t.Fatalf("PCSG wake reused materialized PodGang %s", name)
@@ -284,6 +316,97 @@ func Test_ZR5_PodCliqueSetReplicaIsolation(t *testing.T) {
 		t.Fatalf("PodGangMap for untouched PCS replica changed")
 	}
 	assertPodGangUIDs(t, ctx, tc, replicaOnePodGangs)
+}
+
+func Test_ZR6_StandaloneWakePreservesRunningAnchor(t *testing.T) {
+	const (
+		pcsName  = "zero-running-anchor"
+		wakeGate = "test.grove.io/hold-wake"
+	)
+	ctx := context.Background()
+	tc, cleanup := prepareIdleWorkload(t, ctx, 7, pcsName, 1, func(pcs *grovecorev1alpha1.PodCliqueSet) {
+		guarded := idleClique(t, pcs, "guarded")
+		guarded.Spec.MinAvailable = ptr.To(int32(2))
+		guarded.Spec.PodSpec.SchedulingGates = []corev1.PodSchedulingGate{{Name: wakeGate}}
+	})
+	defer cleanup()
+	waitForPodCountAndReady(t, tc, 1)
+	routerName := pcsName + "-0-worker"
+	guardedName := pcsName + "-0-guarded"
+	pcsgName := pcsName + "-0-workers"
+	routerLocations := podUIDLocations(podsForClique(t, tc, routerName))
+	initialGangs := podGangUIDsForPCSReplica(t, ctx, tc, pcsName, "0")
+	pgm := getPGM(t, ctx, tc, pcsName, 0)
+	if len(pgm.Spec.Entries) != 2 {
+		t.Fatalf("unexpected initial PodGangMap entries: %v", pgm.Spec.Entries)
+	}
+	var anchorEpoch string
+	for _, entry := range pgm.Spec.Entries {
+		if entry.Role == grovecorev1alpha1.PodGangEntryRoleAnchor {
+			anchorEpoch = entry.Epoch
+		}
+	}
+	anchorKey := client.ObjectKey{Namespace: tc.Namespace, Name: apicommon.GenerateAnchorPodGangName(
+		apicommon.ResourceNameReplica{Name: pcsName, Replica: 0}, anchorEpoch)}
+	anchor := &groveschedulerv1alpha1.PodGang{}
+	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
+		if err := tc.Client.Get(ctx, anchorKey, anchor); err != nil {
+			return false, err
+		}
+		return anchor.Status.LastScheduled != nil, nil
+	}); err != nil {
+		t.Fatalf("running anchor did not record scheduling: %v", err)
+	}
+	lastScheduled := anchor.Status.LastScheduled.DeepCopy()
+
+	scaleIdleComponents(t, ctx, tc, guardedName, pcsgName, 2)
+	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
+		if err := tc.Client.Get(ctx, anchorKey, anchor); err != nil {
+			return false, err
+		}
+		pcsg := &grovecorev1alpha1.PodCliqueScalingGroup{}
+		if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: pcsgName}, pcsg); err != nil {
+			return false, err
+		}
+		for _, group := range anchor.Spec.PodGroups {
+			if group.Name == guardedName && group.MinReplicas == 2 && len(group.PodReferences) == 2 {
+				return pcsg.Status.AvailableReplicas == 2 &&
+					meta.IsStatusConditionFalse(anchor.Status.Conditions, string(groveschedulerv1alpha1.PodGangConditionTypeScheduled)), nil
+			}
+		}
+		return false, nil
+	}); err != nil {
+		t.Fatalf("PCSG wake waited for the restored standalone group: %v", err)
+	}
+	if !lastScheduled.Equal(anchor.Status.LastScheduled) {
+		t.Fatal("pending standalone wake changed the anchor scheduling history")
+	}
+	assertPodGangUIDs(t, ctx, tc, initialGangs)
+	assertRetainedPodLocation(t, podsForClique(t, tc, routerName), routerLocations)
+	for _, pod := range podsForClique(t, tc, routerName) {
+		if !k8sutils.IsPodReady(&pod) {
+			t.Fatalf("running anchor pod %s became unready", pod.Name)
+		}
+	}
+	pending := podsForClique(t, tc, guardedName)
+	if len(pending) != 2 {
+		t.Fatalf("restored standalone has %d pods, want 2", len(pending))
+	}
+	for i := range pending {
+		if pending[i].Spec.NodeName != "" {
+			t.Fatalf("held standalone pod %s was scheduled", pending[i].Name)
+		}
+		patch := client.MergeFrom(pending[i].DeepCopy())
+		pending[i].Spec.SchedulingGates = slices.DeleteFunc(pending[i].Spec.SchedulingGates, func(gate corev1.PodSchedulingGate) bool {
+			return gate.Name == wakeGate
+		})
+		if err := tc.Client.Patch(ctx, &pending[i], patch); err != nil {
+			t.Fatalf("failed to release wake gate: %v", err)
+		}
+	}
+	waitForPodCountAndReady(t, tc, 7)
+	waitForStandaloneMembership(t, ctx, tc, pcsName, "guarded", 2)
+	assertRetainedPodLocation(t, podsForClique(t, tc, routerName), routerLocations)
 }
 
 func prepareIdleWorkload(

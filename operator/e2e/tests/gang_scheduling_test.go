@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strconv"
 	"testing"
 	"time"
 
@@ -113,8 +112,8 @@ func Test_GS1_GangSchedulingWithFullReplicas(t *testing.T) {
 }
 
 // Test_GS13_SimultaneousWakeWithMixedIdle verifies concurrent standalone and PCSG wake while another
-// standalone clique remains idle. Depending on reconcile timing, the woken components may share the
-// retained base anchor or receive distinct anchors; both paths must preserve membership and ordering.
+// standalone clique remains idle. The standalone returns to the retained anchor, while each PCSG
+// replica wakes in its own scaled PodGang.
 func Test_GS13_SimultaneousWakeWithMixedIdle(t *testing.T) {
 	const (
 		pcsName       = "workload-idle-wake"
@@ -183,21 +182,23 @@ func Test_GS13_SimultaneousWakeWithMixedIdle(t *testing.T) {
 	removePodGangFinalizers(t, ctx, tc, heldPodGangs)
 	waitForAllIdle(t, ctx, tc, pcsName, prefillName, decodeName)
 
-	Logger.Info("7. Wake both components again and verify epochs and PodGang names are fresh")
+	Logger.Info("7. Wake both components again and verify the anchor is reused and the SPG is fresh")
 	scaleIdleComponents(t, ctx, tc, workerName, pcsgName, 1)
 	if err := tc.WaitForReadyPods(3); err != nil {
 		t.Fatalf("Failed to wait for second wake: %v", err)
 	}
 	secondWake := waitForWakeState(t, ctx, tc, pcsName, idlePCLQName, workerName, prefillName, decodeName)
-	for name := range secondWake.podGangNames {
-		if firstWake.podGangNames.Has(name) {
-			t.Fatalf("second wake reused old PodGang name %s", name)
-		}
+	if secondWake.anchorName != firstWake.anchorName {
+		t.Fatalf("second wake changed anchor name: %s -> %s", firstWake.anchorName, secondWake.anchorName)
+	}
+	if secondWake.scaleOutName == firstWake.scaleOutName {
+		t.Fatalf("second wake reused scaled PodGang %s", secondWake.scaleOutName)
 	}
 }
 
 type observedWakeState struct {
-	podGangNames stringSet
+	anchorName   string
+	scaleOutName string
 }
 
 type stringSet map[string]struct{}
@@ -215,7 +216,8 @@ func waitForWakeState(t *testing.T, ctx context.Context, tc *testctx.TestContext
 		if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: pcsName + "-0"}, pgm); err != nil {
 			return false, client.IgnoreNotFound(err)
 		}
-		var workerAnchor, pcsgAnchor *grovecorev1alpha1.PodGangEntry
+		var workerAnchor, scaleOut *grovecorev1alpha1.PodGangEntry
+		anchorCount := 0
 		epochs := stringSet{}
 		for i := range pgm.Spec.Entries {
 			entry := &pgm.Spec.Entries[i]
@@ -223,50 +225,37 @@ func waitForWakeState(t *testing.T, ctx context.Context, tc *testctx.TestContext
 				return false, nil
 			}
 			epochs[entry.Epoch] = struct{}{}
-			if entry.Role != grovecorev1alpha1.PodGangEntryRoleAnchor {
-				continue
-			}
 			if _, carriesIdle := entry.PodCliques["idle"]; carriesIdle {
 				return false, nil
 			}
-			if entry.PodCliques["worker"] == 1 {
-				workerAnchor = entry
-			}
-			if indices := entry.PCSGReplicaIndices["workers"]; len(indices) == 1 && indices[0] == 0 {
-				pcsgAnchor = entry
+			switch entry.Role {
+			case grovecorev1alpha1.PodGangEntryRoleAnchor:
+				anchorCount++
+				if len(entry.PCSGReplicaIndices) != 0 {
+					return false, nil
+				}
+				if entry.PodCliques["worker"] == 1 {
+					workerAnchor = entry
+				}
+			case grovecorev1alpha1.PodGangEntryRoleScaleOut:
+				if slices.Equal(entry.PCSGReplicaIndices["workers"], []int32{0}) {
+					scaleOut = entry
+				}
 			}
 		}
-		if workerAnchor == nil || pcsgAnchor == nil {
+		if anchorCount != 1 || workerAnchor == nil || scaleOut == nil {
 			return false, nil
 		}
-		if workerAnchor != pcsgAnchor && workerAnchor.Epoch == pcsgAnchor.Epoch {
+		if len(workerAnchor.DependsOn) != 0 {
 			return false, nil
 		}
-		if workerAnchor == pcsgAnchor {
-			if len(workerAnchor.DependsOn) != 0 {
-				return false, nil
-			}
-		} else {
-			first, second := workerAnchor, pcsgAnchor
-			firstEpoch, firstErr := strconv.ParseInt(first.Epoch, 10, 64)
-			secondEpoch, secondErr := strconv.ParseInt(second.Epoch, 10, 64)
-			if firstErr != nil || secondErr != nil {
-				return false, nil
-			}
-			if firstEpoch > secondEpoch {
-				first, second = second, first
-			}
-			if len(first.DependsOn) != 0 || !slices.Equal(second.DependsOn, []string{first.Epoch}) {
-				return false, nil
-			}
+		// A PCSG that wakes first has no anchor dependency; active entries retain that choice.
+		if len(scaleOut.DependsOn) != 0 && !slices.Equal(scaleOut.DependsOn, []string{workerAnchor.Epoch}) {
+			return false, nil
 		}
 		rnr := apicommon.ResourceNameReplica{Name: pcsName, Replica: 0}
 		workerPodGangName := apicommon.GenerateAnchorPodGangName(rnr, workerAnchor.Epoch)
-		pcsgPodGangName := apicommon.GenerateAnchorPodGangName(rnr, pcsgAnchor.Epoch)
-		prefillDependencies := []string(nil)
-		if workerAnchor == pcsgAnchor {
-			prefillDependencies = []string{workerName}
-		}
+		pcsgPodGangName := apicommon.GenerateNonAnchorPodGangName(rnr, scaleOut.Epoch, "workers", 0)
 		expectedPodGangs := map[string]string{
 			workerName:  workerPodGangName,
 			prefillName: pcsgPodGangName,
@@ -274,7 +263,7 @@ func waitForWakeState(t *testing.T, ctx context.Context, tc *testctx.TestContext
 		}
 		expectedDependencies := map[string][]string{
 			workerName:  nil,
-			prefillName: prefillDependencies,
+			prefillName: nil,
 			decodeName:  {prefillName},
 		}
 		for name, dependencies := range expectedDependencies {
@@ -325,7 +314,8 @@ func waitForWakeState(t *testing.T, ctx context.Context, tc *testctx.TestContext
 		if len(expectedGroups) != 0 {
 			return false, nil
 		}
-		observed.podGangNames = expectedNames
+		observed.anchorName = workerPodGangName
+		observed.scaleOutName = pcsgPodGangName
 		return true, nil
 	}); err != nil {
 		t.Fatalf("Wake state did not converge: %v", err)

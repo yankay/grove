@@ -181,6 +181,20 @@ func TestResolveDependencySatisfiedByEpoch(t *testing.T) {
 			expected:        map[string]bool{testAnchor0Epoch: true, testTailEpoch: false},
 		},
 		{
+			name: "idle anchor needs no materialized PodGang",
+			entries: []grovecorev1alpha1.PodGangEntry{
+				testutils.NewPodGangEntryBuilder("hash", testAnchor0Epoch).
+					WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(0).Build(),
+				scaleOutEntry(testScaleOutEpoch, testAnchor0Epoch),
+			},
+			expected: map[string]bool{testAnchor0Epoch: true, testScaleOutEpoch: true},
+		},
+		{
+			name:     "unknown dependency still blocks scheduling",
+			entries:  []grovecorev1alpha1.PodGangEntry{scaleOutEntry(testScaleOutEpoch, "missing")},
+			expected: map[string]bool{testScaleOutEpoch: false},
+		},
+		{
 			name: "dependency epoch belonging to a tail is resolved the same as an anchor",
 			entries: []grovecorev1alpha1.PodGangEntry{
 				anchorEntry(),
@@ -215,6 +229,9 @@ func TestResolveDependencySatisfiedByEpoch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var objects []client.Object
 			for _, entry := range tc.entries {
+				if componentutils.IsPodGangEntryEmpty(entry) {
+					continue
+				}
 				builder := testutils.NewPodGangBuilder(podGangNameForEpoch(entry.Epoch), testNamespace).
 					WithLabels(map[string]string{
 						apicommon.LabelPartOfKey:                testPCSName,
@@ -590,6 +607,7 @@ func anchorEntry() grovecorev1alpha1.PodGangEntry {
 	return testutils.NewPodGangEntryBuilder("hash", testAnchor0Epoch).
 		WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
 		WithAnchorIndex(0).
+		WithPodCliques(map[string]int32{testCliqueName: 1}).
 		Build()
 }
 
@@ -597,6 +615,7 @@ func anchorDependentEntry(epoch string, anchorIndex int32, dependsOnEpoch string
 	return testutils.NewPodGangEntryBuilder("hash", epoch).
 		WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
 		WithAnchorIndex(anchorIndex).
+		WithPodCliques(map[string]int32{testCliqueName: 1}).
 		WithDependsOn(dependsOnEpoch).
 		Build()
 }
@@ -604,6 +623,7 @@ func anchorDependentEntry(epoch string, anchorIndex int32, dependsOnEpoch string
 func tailEntry(epoch, dependsOnEpoch string) grovecorev1alpha1.PodGangEntry {
 	return testutils.NewPodGangEntryBuilder("hash", epoch).
 		WithRole(grovecorev1alpha1.PodGangEntryRoleTail).
+		WithPCSGReplicaIndices(map[string][]int32{"workers": {0}}).
 		WithDependsOn(dependsOnEpoch).
 		Build()
 }
@@ -611,6 +631,7 @@ func tailEntry(epoch, dependsOnEpoch string) grovecorev1alpha1.PodGangEntry {
 func scaleOutEntry(epoch, dependsOnEpoch string) grovecorev1alpha1.PodGangEntry {
 	return testutils.NewPodGangEntryBuilder("hash", epoch).
 		WithRole(grovecorev1alpha1.PodGangEntryRoleScaleOut).
+		WithPCSGReplicaIndices(map[string][]int32{"workers": {1}}).
 		WithDependsOn(dependsOnEpoch).
 		Build()
 }
