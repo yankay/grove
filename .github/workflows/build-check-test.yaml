@@ -111,7 +111,7 @@ jobs:
       needs.changes.outputs.e2e-relevant == 'true'
     # use NVIDIA self-hosted runner setting is on Velonix repository
     runs-on: prod-grove-e2e-v1
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
     strategy:
       fail-fast: false
       matrix:
@@ -146,12 +146,15 @@ jobs:
           - test_name: kubernetes_1_33_default
             make_target: "run-kubernetes-compatibility-e2e"
             kubernetes_version: "1.33"
+            timeout_minutes: 90
           - test_name: kubernetes_1_34_default
             make_target: "run-kubernetes-compatibility-e2e"
             kubernetes_version: "1.34"
+            timeout_minutes: 90
           - test_name: kubernetes_1_35_default
             make_target: "run-kubernetes-compatibility-e2e"
             kubernetes_version: "1.35"
+            timeout_minutes: 90
     name: E2E - ${{ matrix.test_name }}
     steps:
       # print runner specs so we have a record in case of failures
