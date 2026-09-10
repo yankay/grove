@@ -22,7 +22,17 @@ LD_PACKAGE_PATH := "github.com/ai-dynamo/grove/operator/internal"
 OPERATOR_NAME        := "grove-operator"
 INITC_NAME           := "grove-initc"
 INSTALL_CRDS_NAME    := "grove-install-crds"
-K3S_IMAGE       ?= rancher/k3s:v1.35.5-k3s1
+K3S_IMAGE := $(or $(K3S_IMAGE),$(E2E_CLUSTER__K3S_IMAGE),rancher/k3s:v1.35.5-k3s1)
+KUBERNETES_SUPPORTED_VERSIONS := 1.33 1.34 1.35
+KUBERNETES_CURRENT_VERSION    ?= $(lastword $(KUBERNETES_SUPPORTED_VERSIONS))
+KUBERNETES_VERSION            ?= $(KUBERNETES_CURRENT_VERSION)
+ifeq ($(strip $(KUBERNETES_VERSION)),)
+KUBERNETES_VERSION := $(KUBERNETES_CURRENT_VERSION)
+endif
+K3S_IMAGE_KUBERNETES_1_33     ?= rancher/k3s:v1.33.13-k3s2
+K3S_IMAGE_KUBERNETES_1_34     ?= rancher/k3s:v1.34.11-k3s1
+K3S_IMAGE_KUBERNETES_1_35     ?= rancher/k3s:v1.35.8-k3s1
+K3S_IMAGE_FOR_KUBERNETES       = $(K3S_IMAGE_KUBERNETES_$(subst .,_,$(KUBERNETES_VERSION)))
 E2E_REGISTRY_PORT ?= 5001
 E2E_CREATE_FLAGS  ?=
 ifndef DIAG_DIR
@@ -148,6 +158,7 @@ run-upgrade-e2e: $(GOTESTSUM)
 # Create a k3d cluster for e2e testing (with Grove and Kai scheduler deployed)
 # This is optional - tests work with any Kubernetes cluster that has the required components
 .PHONY: e2e-cluster-up
+e2e-cluster-up: export E2E_CLUSTER__K3S_IMAGE = $(K3S_IMAGE)
 e2e-cluster-up: $(UV)
 	@$(MODULE_HACK_DIR)/infra-manager.py setup $(E2E_CREATE_FLAGS)
 
@@ -168,6 +179,16 @@ run-e2e-full: e2e-cluster-up
 		(echo "Tests failed, cleaning up cluster..."; $(MAKE) e2e-cluster-down; exit 1)
 	@echo "> Tests passed, cleaning up cluster..."
 	@$(MAKE) e2e-cluster-down
+
+# Run the compatibility baseline used by CI for every Kubernetes release line.
+.PHONY: run-kubernetes-compatibility-e2e
+run-kubernetes-compatibility-e2e:
+	@test -n "$(K3S_IMAGE_FOR_KUBERNETES)" || \
+		(echo "Unsupported Kubernetes version $(KUBERNETES_VERSION); supported versions: $(KUBERNETES_SUPPORTED_VERSIONS)" && exit 1)
+	@echo "> Running Kubernetes $(KUBERNETES_VERSION) compatibility baseline..."
+	@$(MAKE) run-e2e-full \
+		K3S_IMAGE=$(K3S_IMAGE_FOR_KUBERNETES) \
+		TEST_PATTERN='$(TEST_PATTERN)'
 
 # Run autoMNNVL e2e tests (all 4 configurations: supported/unsupported x enabled/disabled)
 # Creates a lightweight k3d cluster (2 workers, no Kai/topology), runs all configurations
