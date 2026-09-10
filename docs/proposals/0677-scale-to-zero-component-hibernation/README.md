@@ -1,4 +1,4 @@
-# GREP-0677: Zero-Replica Gang Membership
+# GREP-0677: Scale-to-Zero Component Hibernation
 
 <!-- toc -->
 - [Summary](#summary)
