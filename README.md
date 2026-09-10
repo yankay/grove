@@ -34,11 +34,10 @@ For more install options including local and remote K8s clusters, see the
 
 ## Kubernetes Compatibility
 
-Grove validates three Kubernetes minor release lines in CI:
+Grove validates the following Kubernetes minor release lines in CI:
 
 | Kubernetes | K3s image |
 | :--- | :--- |
-| `1.33` | `rancher/k3s:v1.33.13-k3s2` |
 | `1.34` | `rancher/k3s:v1.34.11-k3s1` |
 | `1.35` | `rancher/k3s:v1.35.8-k3s1` |
 

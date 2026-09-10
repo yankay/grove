@@ -2,7 +2,7 @@
 
 ## Kubernetes compatibility
 
-The minimum tested Kubernetes version is 1.33. See the
+The minimum tested Kubernetes version is 1.34. See the
 [compatibility matrix](../README.md#kubernetes-compatibility).
 
 To install Grove, you can choose one of the following options:

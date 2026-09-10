@@ -143,10 +143,6 @@ jobs:
           - test_name: version_upgrade
             test_pattern: "^Test_VUPG"
             make_target: "run-upgrade-e2e"
-          - test_name: kubernetes_1_33_default
-            make_target: "run-kubernetes-compatibility-e2e"
-            kubernetes_version: "1.33"
-            timeout_minutes: 90
           - test_name: kubernetes_1_34_default
             make_target: "run-kubernetes-compatibility-e2e"
             kubernetes_version: "1.34"
@@ -226,7 +222,6 @@ jobs:
           - test_name: resource_sharing
           - test_name: podgangmap_reconstruct
           - test_name: version_upgrade
-          - test_name: kubernetes_1_33_default
           - test_name: kubernetes_1_34_default
           - test_name: kubernetes_1_35_default
     name: E2E - ${{ matrix.test_name }}
