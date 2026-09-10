@@ -178,6 +178,44 @@ func TestBackend_SyncPodGang_CreateAndUpdate(t *testing.T) {
 	assert.Equal(t, int32(4), *gotAfterUpdate.Spec.SubGroups[1].MinMember)
 }
 
+func TestBackend_SyncPodGang_RestoresStandaloneFloor(t *testing.T) {
+	ctx := context.Background()
+	pcs := newPodCliqueSet("wake-pcs", "team-a",
+		podCliqueTemplateWithQueue("router", "team-a"),
+		podCliqueTemplateWithQueue("worker", "team-a"))
+	podGang := testutils.NewPodGangBuilder("running-anchor", "default").
+		WithSchedulerName(string(configv1alpha1.SchedulerNameKai)).Build()
+	setPodCliqueSetControllerOwner(podGang, pcs)
+	router := groveschedulerv1alpha1.PodGroup{Name: "router", MinReplicas: 1,
+		PodReferences: []groveschedulerv1alpha1.NamespacedName{{Name: "router-0", Namespace: "default"}}}
+	podGang.Spec.PodGroups = []groveschedulerv1alpha1.PodGroup{router}
+	cl := testutils.NewTestClientBuilder().WithObjects(pcs, podGang).Build()
+	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10),
+		configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
+	require.NoError(t, b.Init(cl))
+	require.NoError(t, b.SyncPodGang(ctx, podGang))
+	before := &kaischedulingv2alpha2.PodGroup{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(podGang), before))
+
+	podGang.Spec.PodGroups = append(podGang.Spec.PodGroups, groveschedulerv1alpha1.PodGroup{
+		Name: "worker", MinReplicas: 2,
+		PodReferences: []groveschedulerv1alpha1.NamespacedName{
+			{Name: "worker-0", Namespace: "default"}, {Name: "worker-1", Namespace: "default"},
+		},
+	})
+	require.NoError(t, b.SyncPodGang(ctx, podGang))
+	after := &kaischedulingv2alpha2.PodGroup{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(podGang), after))
+	require.Len(t, after.Spec.SubGroups, 2)
+	assert.Equal(t, before.Spec.SubGroups[0], after.Spec.SubGroups[0], "running router constraints stay intact")
+	assert.Equal(t, "worker", after.Spec.SubGroups[1].Name)
+	require.NotNil(t, after.Spec.SubGroups[1].MinMember)
+	assert.Equal(t, int32(2), *after.Spec.SubGroups[1].MinMember)
+	require.NotNil(t, after.Spec.MinMember)
+	assert.Equal(t, int32(3), *after.Spec.MinMember)
+	assert.Equal(t, before.OwnerReferences, after.OwnerReferences)
+}
+
 func TestBackend_SyncPodGang_SkipsEmptyTopologyConstraintGroups(t *testing.T) {
 	pcs := newPodCliqueSet(
 		"empty-group-pcs",

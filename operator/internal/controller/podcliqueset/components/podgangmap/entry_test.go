@@ -248,29 +248,6 @@ func TestFindAnchorEntryForStandalonePCLQ(t *testing.T) {
 	assert.Nil(t, got, "old-generation anchor is not a match")
 }
 
-func TestFindAnchorEntryByIndex(t *testing.T) {
-	const hash = "gen-1"
-	anchor0 := testutils.NewPodGangEntryBuilder(hash, "100").WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(0).Build()
-	anchor1 := testutils.NewPodGangEntryBuilder(hash, "200").WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(1).Build()
-	entries := []grovecorev1alpha1.PodGangEntry{anchor0, anchor1}
-
-	require.NotNil(t, findAnchorEntryByIndex(entries, hash, 1))
-	assert.Equal(t, "200", findAnchorEntryByIndex(entries, hash, 1).Epoch)
-	assert.Nil(t, findAnchorEntryByIndex(entries, hash, 2))
-}
-
-func TestNextAnchorIndex(t *testing.T) {
-	const hash = "gen-1"
-	assert.Equal(t, int32(0), nextAnchorIndex(nil, hash), "empty entries start at 0")
-
-	anchor0 := testutils.NewPodGangEntryBuilder(hash, "100").WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(0).Build()
-	assert.Equal(t, int32(1), nextAnchorIndex([]grovecorev1alpha1.PodGangEntry{anchor0}, hash))
-
-	anchor2 := testutils.NewPodGangEntryBuilder(hash, "300").WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(2).Build()
-	// 0 and 2 used → next free is 1.
-	assert.Equal(t, int32(1), nextAnchorIndex([]grovecorev1alpha1.PodGangEntry{anchor0, anchor2}, hash))
-}
-
 func TestEpochAllocator(t *testing.T) {
 	const hash = "gen-1"
 	e100 := testutils.NewPodGangEntryBuilder(hash, "100").Build()

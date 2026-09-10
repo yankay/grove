@@ -472,6 +472,13 @@ func (r _resource) fetchPodGangsForGatedPods(ctx context.Context, gatedPods []*c
 // satisfied. Each distinct dependency epoch is resolved with a single List, memoized across entries.
 func (r _resource) resolveDependencySatisfiedByEpoch(ctx context.Context, ss *syncSnapshot) (map[string]bool, error) {
 	epochScheduled := make(map[string]bool)
+	for _, entry := range ss.pgm.Spec.Entries {
+		// Idle slots have no materialized PodGang to schedule. Keep their epoch references intact
+		// so a later wake resumes the dependency without rewriting active entries.
+		if componentutils.IsPodGangEntryEmpty(entry) {
+			epochScheduled[entry.Epoch] = true
+		}
+	}
 	satisfiedByEpoch := make(map[string]bool, len(ss.pgm.Spec.Entries))
 	for _, entry := range ss.pgm.Spec.Entries {
 		satisfied := true

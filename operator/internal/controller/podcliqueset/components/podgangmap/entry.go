@@ -61,40 +61,6 @@ func sortEntriesByEpoch(entries []grovecorev1alpha1.PodGangEntry) error {
 	return nil
 }
 
-// findAnchorEntryByIndex returns the current-generation anchor entry with the given AnchorIndex, or
-// nil when absent.
-func findAnchorEntryByIndex(entries []grovecorev1alpha1.PodGangEntry, currentHash string, anchorIndex int32) *grovecorev1alpha1.PodGangEntry {
-	for i := range entries {
-		if entries[i].Role == grovecorev1alpha1.PodGangEntryRoleAnchor &&
-			entries[i].PodCliqueSetGenerationHash == currentHash &&
-			entries[i].AnchorIndex != nil && *entries[i].AnchorIndex == anchorIndex {
-			return &entries[i]
-		}
-	}
-	return nil
-}
-
-// nextAnchorIndex returns the smallest non-negative AnchorIndex not already used by a
-// current-generation anchor entry. Bootstrap anchors take index 0; a wake that cannot reuse an
-// existing anchor takes the next free index.
-func nextAnchorIndex(entries []grovecorev1alpha1.PodGangEntry, currentHash string) int32 {
-	used := make(map[int32]struct{})
-	for i := range entries {
-		if entries[i].Role == grovecorev1alpha1.PodGangEntryRoleAnchor &&
-			entries[i].PodCliqueSetGenerationHash == currentHash &&
-			entries[i].AnchorIndex != nil {
-			used[*entries[i].AnchorIndex] = struct{}{}
-		}
-	}
-	var idx int32
-	for {
-		if _, taken := used[idx]; !taken {
-			return idx
-		}
-		idx++
-	}
-}
-
 // epochAllocator issues fresh, strictly increasing epoch strings for one PodGangMap reconcile.
 type epochAllocator struct {
 	next int64
