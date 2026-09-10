@@ -131,7 +131,7 @@ func buildBootstrapTailEntry(pcs *grovecorev1alpha1.PodCliqueSet, epoch, anchorE
 	for _, pcsgConfig := range pcs.Spec.Template.PodCliqueScalingGroupConfigs {
 		replicas := *pcsgConfig.Replicas
 		minAvailable := *pcsgConfig.MinAvailable
-		if replicas == 0 || replicas <= minAvailable {
+		if replicas <= minAvailable {
 			continue
 		}
 		pcsgReplicaIndices[pcsgConfig.Name] = lo.RangeFrom(minAvailable, int(replicas-minAvailable))
@@ -318,8 +318,7 @@ func reconcilePCSGReplicaIndices(entries []grovecorev1alpha1.PodGangEntry,
 			return err
 		}
 		currentCount := countPCSGReplicaIndices(entries, pcsgConfigName)
-		desired := int(pcsg.Spec.Replicas)
-		diff := desired - currentCount
+		diff := int(pcsg.Spec.Replicas) - currentCount
 		switch {
 		case diff > 0:
 			if err := appendScaleOutReplicaIndices(entries, currentHash, pcsgConfigName, lo.RangeFrom[int32](int32(currentCount), diff)); err != nil {
@@ -449,12 +448,8 @@ func drainPriority(entry grovecorev1alpha1.PodGangEntry) int {
 // updates. Empty entries from older generations and empty tails are removed.
 func removeEmptyEntries(entries []grovecorev1alpha1.PodGangEntry, currentGenerationHash string) []grovecorev1alpha1.PodGangEntry {
 	return slices.DeleteFunc(entries, func(entry grovecorev1alpha1.PodGangEntry) bool {
-		if entry.Role == grovecorev1alpha1.PodGangEntryRoleScaleOut &&
-			entry.PodCliqueSetGenerationHash == currentGenerationHash {
-			return false
-		}
-		if entry.Role == grovecorev1alpha1.PodGangEntryRoleAnchor &&
-			entry.PodCliqueSetGenerationHash == currentGenerationHash {
+		if entry.PodCliqueSetGenerationHash == currentGenerationHash &&
+			(entry.Role == grovecorev1alpha1.PodGangEntryRoleAnchor || entry.Role == grovecorev1alpha1.PodGangEntryRoleScaleOut) {
 			return false
 		}
 		return componentutils.IsPodGangEntryEmpty(entry)

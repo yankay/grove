@@ -210,12 +210,8 @@ func isPCSGChildPCLQUpdated(pclq *grovecorev1alpha1.PodClique, expectedPCLQPodTe
 // event gives operators a discrete, log-visible signal that a previously-running workload is
 // fully down (and that gang termination is now armed and will fire after TerminationDelay).
 func (r *Reconciler) emitAllScheduledReplicasLostIfNeeded(pcsg *grovecorev1alpha1.PodCliqueScalingGroup, originalScheduled int32) {
-	// GREP-0677: a scale-to-zero transition is intentional, not a loss. Do not emit the warning
-	// (and do not imply gang termination is armed) when the PCSG is idle.
-	if pcsg.Spec.Replicas == 0 {
-		return
-	}
-	if originalScheduled > 0 && pcsg.Status.ScheduledReplicas == 0 {
+	// Scaling to zero is intentional, not a loss.
+	if pcsg.Spec.Replicas != 0 && originalScheduled > 0 && pcsg.Status.ScheduledReplicas == 0 {
 		r.eventRecorder.Eventf(pcsg, corev1.EventTypeWarning, internalconstants.ReasonAllScheduledReplicasLost,
 			"All scheduled replicas lost (was %d). Gang termination will fire after TerminationDelay if the PCSG stays below MinAvailable; investigate node availability or capacity.",
 			originalScheduled)

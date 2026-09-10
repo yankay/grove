@@ -200,12 +200,8 @@ func mutateSelector(pcsName string, pclq *grovecorev1alpha1.PodClique) error {
 // event gives operators a discrete, log-visible signal that a previously-running workload is
 // fully down (and that gang termination is now armed and will fire after TerminationDelay).
 func (r *Reconciler) emitAllScheduledReplicasLostIfNeeded(pclq *grovecorev1alpha1.PodClique, originalScheduled int32) {
-	// GREP-0677: a scale-to-zero transition is intentional, not a loss. Do not emit the warning
-	// (and do not imply gang termination is armed) when the PodClique is idle.
-	if pclq.Spec.Replicas == 0 {
-		return
-	}
-	if originalScheduled > 0 && pclq.Status.ScheduledReplicas == 0 {
+	// Scaling to zero is intentional, not a loss.
+	if pclq.Spec.Replicas != 0 && originalScheduled > 0 && pclq.Status.ScheduledReplicas == 0 {
 		r.eventRecorder.Eventf(pclq, corev1.EventTypeWarning, internalconstants.ReasonAllScheduledReplicasLost,
 			"All scheduled pods lost (was %d). Gang termination will fire after TerminationDelay if the PodClique stays below MinAvailable; investigate node availability or capacity.",
 			originalScheduled)
@@ -293,9 +289,7 @@ func computeMinAvailableBreachedCondition(pclq *grovecorev1alpha1.PodClique, num
 // mutatePodCliqueScheduledCondition updates the PodCliqueScheduled condition based on scheduled pod counts
 func mutatePodCliqueScheduledCondition(pclq *grovecorev1alpha1.PodClique) {
 	newCondition := computePodCliqueScheduledCondition(pclq)
-	if k8sutils.HasConditionChanged(pclq.Status.Conditions, newCondition) {
-		meta.SetStatusCondition(&pclq.Status.Conditions, newCondition)
-	}
+	meta.SetStatusCondition(&pclq.Status.Conditions, newCondition)
 }
 
 // mutateLastScheduled advances Status.LastScheduled to now when the PodCliqueScheduled condition

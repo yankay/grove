@@ -282,14 +282,13 @@ func (r _resource) ensurePCSGScaleInReady(ctx context.Context, ss *syncSnapshot,
 			fmt.Sprintf("failed to resolve PodCliqueScalingGroup config name for %s", ss.pcsg.Name))
 	}
 	targetIndexSet := componentutils.NewSet(replicaIndices)
-	targetIndices := make([]int32, 0, len(targetIndexSet))
+	targetPCLQNames := make(componentutils.Set[string])
 	for index := range targetIndexSet {
 		replicaIndex, err := strconv.Atoi(index)
 		if err != nil {
 			return groveerr.WrapError(err, errCodeParsePodCliqueScalingGroupReplicaIndex, component.OperationSync,
 				fmt.Sprintf("invalid PodCliqueScalingGroup replica index %q", index))
 		}
-		targetIndices = append(targetIndices, int32(replicaIndex))
 		entry, err := componentutils.FindPodGangEntryForPCSGReplica(ss.pgm.Spec.Entries, "", pcsgConfigName, int32(replicaIndex))
 		if err != nil {
 			return requeue(fmt.Sprintf("PodGangMap %s has invalid membership for PodCliqueScalingGroup %s: %v", ss.pgm.Name, ss.pcsg.Name, err))
@@ -297,13 +296,9 @@ func (r _resource) ensurePCSGScaleInReady(ctx context.Context, ss *syncSnapshot,
 		if entry != nil {
 			return requeue(fmt.Sprintf("PodGangMap %s still references PodCliqueScalingGroup %s replica index %d", ss.pgm.Name, ss.pcsg.Name, replicaIndex))
 		}
-	}
-
-	targetPCLQNames := componentutils.NewSet([]string{})
-	for _, replicaIndex := range targetIndices {
 		for _, cliqueName := range ss.pcsg.Spec.CliqueNames {
 			targetPCLQNames[apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{
-				Name: ss.pcsg.Name, Replica: int(replicaIndex),
+				Name: ss.pcsg.Name, Replica: replicaIndex,
 			}, cliqueName)] = struct{}{}
 		}
 	}

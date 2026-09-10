@@ -17,6 +17,7 @@ package podclique
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -661,6 +662,32 @@ func TestMutateMinAvailableBreachedConditionUpdatesObservedGeneration(t *testing
 	condition := meta.FindStatusCondition(pclq.Status.Conditions, constants.ConditionTypeMinAvailableBreached)
 	require.NotNil(t, condition)
 	assert.Equal(t, int64(2), condition.ObservedGeneration)
+}
+
+func TestMutatePodCliqueScheduledConditionUpdatesObservedGeneration(t *testing.T) {
+	for _, replicas := range []int32{0, 1} {
+		t.Run(fmt.Sprintf("replicas=%d", replicas), func(t *testing.T) {
+			pclq := &grovecorev1alpha1.PodClique{
+				ObjectMeta: metav1.ObjectMeta{Generation: 1},
+				Spec: grovecorev1alpha1.PodCliqueSpec{
+					Replicas: replicas, MinAvailable: ptr.To(int32(1)),
+				},
+				Status: grovecorev1alpha1.PodCliqueStatus{ScheduledReplicas: replicas},
+			}
+			previous := computePodCliqueScheduledCondition(pclq)
+			previous.LastTransitionTime = metav1.NewTime(time.Unix(100, 0))
+			pclq.Status.Conditions = []metav1.Condition{previous}
+			pclq.Generation++
+
+			mutatePodCliqueScheduledCondition(pclq)
+
+			condition := meta.FindStatusCondition(pclq.Status.Conditions, constants.ConditionTypePodCliqueScheduled)
+			require.NotNil(t, condition)
+			assert.Equal(t, pclq.Generation, condition.ObservedGeneration)
+			assert.Equal(t, previous.LastTransitionTime, condition.LastTransitionTime)
+			assert.Equal(t, previous.Status, condition.Status)
+		})
+	}
 }
 
 // TestComputePodCliqueScheduledConditionTreatsZeroReplicasAsScheduled verifies GREP-0677: an idle

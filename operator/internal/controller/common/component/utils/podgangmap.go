@@ -88,7 +88,7 @@ func PodGangNameForPCSGReplica(pgm *grovecorev1alpha1.PodGangMap, rnr apicommon.
 	return apicommon.GenerateNonAnchorPodGangName(rnr, entry.Epoch, pcsgName, pcsgReplicaIndex), nil
 }
 
-// IsPodGangEntryEmpty reports whether an entry has active members.
+// IsPodGangEntryEmpty reports whether an entry has no active members.
 func IsPodGangEntryEmpty(entry grovecorev1alpha1.PodGangEntry) bool {
 	for _, count := range entry.PodCliques {
 		if count > 0 {
@@ -103,36 +103,27 @@ func IsPodGangEntryEmpty(entry grovecorev1alpha1.PodGangEntry) bool {
 	return true
 }
 
-// StandalonePCLQMembership resolves membership, optionally within one generation.
-func StandalonePCLQMembership(entries []grovecorev1alpha1.PodGangEntry, generationHash, cliqueName string) (*grovecorev1alpha1.PodGangEntry, int32, error) {
+// FindPodGangEntryForStandalonePCLQ resolves active membership in one generation.
+func FindPodGangEntryForStandalonePCLQ(entries []grovecorev1alpha1.PodGangEntry, generationHash, cliqueName string) (*grovecorev1alpha1.PodGangEntry, error) {
 	var found *grovecorev1alpha1.PodGangEntry
-	var replicas int32
 	for i := range entries {
 		entry := &entries[i]
 		if entry.Role != grovecorev1alpha1.PodGangEntryRoleAnchor ||
 			(generationHash != "" && entry.PodCliqueSetGenerationHash != generationHash) {
 			continue
 		}
-		count, ok := entry.PodCliques[cliqueName]
-		if !ok {
+		if _, ok := entry.PodCliques[cliqueName]; !ok {
 			continue
 		}
 		if found != nil {
-			return nil, 0, fmt.Errorf("standalone PodClique %q belongs to multiple anchor entries", cliqueName)
+			return nil, fmt.Errorf("standalone PodClique %q belongs to multiple anchor entries", cliqueName)
 		}
 		found = entry
-		replicas = count
 	}
-	return found, replicas, nil
-}
-
-// FindPodGangEntryForStandalonePCLQ resolves active membership in one generation.
-func FindPodGangEntryForStandalonePCLQ(entries []grovecorev1alpha1.PodGangEntry, generationHash, cliqueName string) (*grovecorev1alpha1.PodGangEntry, error) {
-	entry, replicas, err := StandalonePCLQMembership(entries, generationHash, cliqueName)
-	if err != nil || replicas <= 0 {
-		return nil, err
+	if found != nil && found.PodCliques[cliqueName] <= 0 {
+		return nil, nil
 	}
-	return entry, nil
+	return found, nil
 }
 
 // PodGangNameForStandalonePCLQ returns the PodGang owning an active standalone PodClique.

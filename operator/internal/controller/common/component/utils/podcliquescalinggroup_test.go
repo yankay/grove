@@ -27,6 +27,22 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+func TestStartupDependenciesPreservesOrderWithoutDuplicates(t *testing.T) {
+	pcs := testutils.NewPodCliqueSetBuilder("pcs", "default", "uid").
+		WithCliqueStartupType(ptr.To(grovecorev1alpha1.CliqueStartupTypeExplicit)).
+		Build()
+	candidates := map[string][]string{
+		"prefill": {"pcs-0-sg-0-prefill", "pcs-0-sg-1-prefill", "pcs-0-sg-0-prefill"},
+		"router":  {"pcs-0-router"},
+		"idle":    {"pcs-0-idle"},
+	}
+	active := NewSet([]string{"pcs-0-router", "pcs-0-sg-0-prefill"})
+	actual := StartupDependencies(pcs, 0, []string{"prefill", "router", "prefill", "idle"}, active, func(name string) []string {
+		return candidates[name]
+	})
+	assert.Equal(t, []string{"pcs-0-sg-0-prefill", "pcs-0-router"}, actual)
+}
+
 func TestFindScalingGroupConfigForClique(t *testing.T) {
 	// Create test scaling group configurations
 	scalingGroupConfigs := []grovecorev1alpha1.PodCliqueScalingGroupConfig{

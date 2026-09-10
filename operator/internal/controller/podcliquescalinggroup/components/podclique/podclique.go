@@ -437,57 +437,14 @@ func identifyFullyQualifiedStartupDependencyNames(pcs *grovecorev1alpha1.PodCliq
 		// If it is still nil, then by not returning an error we break the API contract. It is a bug that should be fixed.
 		return nil, groveerr.New(errCodeMissingStartupType, component.OperationSync, fmt.Sprintf("PodClique: %v has nil StartupType", client.ObjectKeyFromObject(pclq)))
 	}
-	switch *cliqueStartupType {
-	case grovecorev1alpha1.CliqueStartupTypeInOrder:
-		return getInOrderStartupDependencies(pcs, pcsReplicaIndex, pcsg, pcsgReplicaIndex, foundAtIndex, activePCLQNames), nil
-	case grovecorev1alpha1.CliqueStartupTypeExplicit:
-		return getExplicitStartupDependencies(pcs, pcsReplicaIndex, pcsg, pcsgReplicaIndex, pclq, activePCLQNames), nil
-	default:
-		return nil, nil
-	}
-}
-
-// getInOrderStartupDependencies returns the nearest active preceding clique in the same PodGang.
-func getInOrderStartupDependencies(pcs *grovecorev1alpha1.PodCliqueSet, pcsReplicaIndex int, pcsg *grovecorev1alpha1.PodCliqueScalingGroup, pcsgReplicaIndex, foundAtIndex int, activePCLQNames componentutils.Set[string]) []string {
-	for index := foundAtIndex - 1; index >= 0; index-- {
-		dependencies := activeDependencies(startupDependencyCandidates(
-			pcs, pcsReplicaIndex, pcsg, pcsgReplicaIndex, pcs.Spec.Template.Cliques[index].Name,
-		), activePCLQNames)
-		if len(dependencies) > 0 {
-			return dependencies
+	return componentutils.StartupDependencies(pcs, foundAtIndex, pclq.Spec.StartsAfter, activePCLQNames, func(cliqueName string) []string {
+		candidates := componentutils.GenerateDependencyNamesForBasePodGang(pcs, pcsReplicaIndex, cliqueName)
+		if slices.Contains(pcsg.Spec.CliqueNames, cliqueName) {
+			candidates = append(candidates, apicommon.GeneratePodCliqueName(
+				apicommon.ResourceNameReplica{Name: pcsg.Name, Replica: pcsgReplicaIndex}, cliqueName))
 		}
-	}
-	return nil
-}
-
-// getExplicitStartupDependencies generates fully qualified names for explicitly defined startup dependencies
-func getExplicitStartupDependencies(pcs *grovecorev1alpha1.PodCliqueSet, pcsReplicaIndex int, pcsg *grovecorev1alpha1.PodCliqueScalingGroup, pcsgReplicaIndex int, pclq *grovecorev1alpha1.PodClique, activePCLQNames componentutils.Set[string]) []string {
-	var candidates []string
-	for _, dependency := range pclq.Spec.StartsAfter {
-		candidates = append(candidates, startupDependencyCandidates(pcs, pcsReplicaIndex, pcsg, pcsgReplicaIndex, dependency)...)
-	}
-	return activeDependencies(candidates, activePCLQNames)
-}
-
-func startupDependencyCandidates(pcs *grovecorev1alpha1.PodCliqueSet, pcsReplicaIndex int, pcsg *grovecorev1alpha1.PodCliqueScalingGroup, pcsgReplicaIndex int, cliqueName string) []string {
-	candidates := componentutils.GenerateDependencyNamesForBasePodGang(pcs, pcsReplicaIndex, cliqueName)
-	if slices.Contains(pcsg.Spec.CliqueNames, cliqueName) {
-		candidates = append(candidates, apicommon.GeneratePodCliqueName(
-			apicommon.ResourceNameReplica{Name: pcsg.Name, Replica: pcsgReplicaIndex}, cliqueName))
-	}
-	return candidates
-}
-
-func activeDependencies(candidates []string, activePCLQNames componentutils.Set[string]) []string {
-	dependencies := make([]string, 0, len(candidates))
-	seen := make(componentutils.Set[string], len(candidates))
-	for _, candidate := range candidates {
-		if activePCLQNames.Has(candidate) && !seen.Has(candidate) {
-			dependencies = append(dependencies, candidate)
-			seen[candidate] = struct{}{}
-		}
-	}
-	return dependencies
+		return candidates
+	}), nil
 }
 
 // getPodCliqueSelectorLabels creates label selector map for identifying PodCliques belonging to a PodCliqueScalingGroup

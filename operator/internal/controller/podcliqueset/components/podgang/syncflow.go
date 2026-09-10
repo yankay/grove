@@ -189,10 +189,8 @@ func (r _resource) computeExpectedPodGangs(ctx context.Context, ss *syncState) (
 // replica indices the entry holds. A non-anchor entry (Tail or ScaleOut) yields one PodGang per
 // (PodCliqueScalingGroup, replica index) it carries.
 func (r _resource) buildPodGangInfosFromEntry(ss *syncState, pcsReplicaIndex int, pgEntry grovecorev1alpha1.PodGangEntry) ([]*podGangInfo, error) {
-	if pgEntry.Role == grovecorev1alpha1.PodGangEntryRoleAnchor {
-		if componentutils.IsPodGangEntryEmpty(pgEntry) {
-			return nil, nil
-		}
+	if pgEntry.Role == grovecorev1alpha1.PodGangEntryRoleAnchor && componentutils.IsPodGangEntryEmpty(pgEntry) {
+		return nil, nil
 	}
 	rnr := apicommon.ResourceNameReplica{Name: ss.pcs.Name, Replica: pcsReplicaIndex}
 	if _, err := componentutils.ActivePodCliqueNamesForEntry(ss.pcs, rnr, &pgEntry); err != nil {

@@ -390,49 +390,9 @@ func identifyFullyQualifiedStartupDependencyNames(pcs *grovecorev1alpha1.PodCliq
 		// If it is still nil, then by not returning an error we break the API contract. It is a bug that should be fixed.
 		return nil, groveerr.New(errSyncPodClique, component.OperationSync, fmt.Sprintf("PodClique: %v has nil StartupType", client.ObjectKeyFromObject(pclq)))
 	}
-	switch *cliqueStartupType {
-	case grovecorev1alpha1.CliqueStartupTypeInOrder:
-		return getInOrderStartupDependencies(pcs, pcsReplicaIndex, foundAtIndex, activePCLQNames), nil
-	case grovecorev1alpha1.CliqueStartupTypeExplicit:
-		return getExplicitStartupDependencies(pcs, pcsReplicaIndex, pclq, activePCLQNames), nil
-	default:
-		return nil, nil
-	}
-}
-
-// getInOrderStartupDependencies returns the nearest active preceding clique in the same PodGang.
-func getInOrderStartupDependencies(pcs *grovecorev1alpha1.PodCliqueSet, pcsReplicaIndex, foundAtIndex int, activePCLQNames componentutils.Set[string]) []string {
-	for index := foundAtIndex - 1; index >= 0; index-- {
-		dependencies := activeDependencies(
-			componentutils.GenerateDependencyNamesForBasePodGang(pcs, pcsReplicaIndex, pcs.Spec.Template.Cliques[index].Name),
-			activePCLQNames,
-		)
-		if len(dependencies) > 0 {
-			return dependencies
-		}
-	}
-	return nil
-}
-
-// getExplicitStartupDependencies resolves explicitly declared startup dependencies.
-func getExplicitStartupDependencies(pcs *grovecorev1alpha1.PodCliqueSet, pcsReplicaIndex int, pclq *grovecorev1alpha1.PodClique, activePCLQNames componentutils.Set[string]) []string {
-	dependencies := make([]string, 0, len(pclq.Spec.StartsAfter))
-	for _, dependency := range pclq.Spec.StartsAfter {
-		dependencies = append(dependencies, componentutils.GenerateDependencyNamesForBasePodGang(pcs, pcsReplicaIndex, dependency)...)
-	}
-	return activeDependencies(dependencies, activePCLQNames)
-}
-
-func activeDependencies(candidates []string, activePCLQNames componentutils.Set[string]) []string {
-	dependencies := make([]string, 0, len(candidates))
-	seen := make(componentutils.Set[string], len(candidates))
-	for _, candidate := range candidates {
-		if activePCLQNames.Has(candidate) && !seen.Has(candidate) {
-			dependencies = append(dependencies, candidate)
-			seen[candidate] = struct{}{}
-		}
-	}
-	return dependencies
+	return componentutils.StartupDependencies(pcs, foundAtIndex, pclq.Spec.StartsAfter, activePCLQNames, func(cliqueName string) []string {
+		return componentutils.GenerateDependencyNamesForBasePodGang(pcs, pcsReplicaIndex, cliqueName)
+	}), nil
 }
 
 // getPodCliqueSelectorLabels returns labels for selecting all PodCliques of a PodCliqueSet.
