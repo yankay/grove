@@ -54,6 +54,8 @@ const (
 	upgradePCSGWorkloadName = "upgrade-pcsg-only"
 	// upgradePCSGWorkloadNamespace is the namespace of that workload.
 	upgradePCSGWorkloadNamespace = "default"
+	// upgradePCSGName is the PodCliqueScalingGroup used by the pod survival upgrade test.
+	upgradePCSGName = "upgrade-survivor-0-upgrade-group"
 	// upgradeBootstrapPCLQName is the bootstrap PodClique scaled by the pod-index upgrade test.
 	upgradeBootstrapPCLQName = "upgrade-survivor-0-upgrade-group-0-bootstrap"
 )
@@ -79,6 +81,7 @@ func (s *podSurvivalUpgrade) deployWorkload(t *testing.T, tc *testctx.TestContex
 // scaling the workload and checking the init container migration.
 func (s *podSurvivalUpgrade) verifyPodsSurvive(t *testing.T, tc *testctx.TestContext) {
 	waitForPCSGPodIndices(t, tc, 0, 1, 2)
+	waitForHealthyStateObserved(t, tc, upgradePCSGName)
 	verifyPodUIDsUnchanged(t, tc, s.podsBeforeUpgrade)
 
 	deletePodAndVerifyIndexedReplacement(t, tc, 3)
@@ -139,6 +142,19 @@ func Test_VUPG2_RecoverPodGangMapAfterScaleBelowMinAvailable(t *testing.T) {
 		preUpgrade:  deployWorkloadOnFromVersion,
 		postUpgrade: verifyPodGangMapRecoversAfterScaleBelowMinAvailable,
 	})
+}
+
+func waitForHealthyStateObserved(t *testing.T, tc *testctx.TestContext, pcsgName string) {
+	t.Helper()
+	err := wait.PollUntilContextTimeout(t.Context(), defaultPollInterval, defaultPollTimeout, true,
+		func(ctx context.Context) (bool, error) {
+			pcsg := &grovev1alpha1.PodCliqueScalingGroup{}
+			if err := tc.Client.Get(ctx, types.NamespacedName{Namespace: tc.Namespace, Name: pcsgName}, pcsg); err != nil {
+				return false, err
+			}
+			return meta.IsStatusConditionTrue(pcsg.Status.Conditions, apiconstants.ConditionTypeHealthyStateObserved), nil
+		})
+	require.NoError(t, err, "PodCliqueScalingGroup %s did not record healthy state after upgrade", pcsgName)
 }
 
 // deployWorkloadOnFromVersion deploys the configured workload on the fromVersion operator.
