@@ -20,15 +20,14 @@ from infra_manager import kai
 from infra_manager.config import KaiConfig
 
 
-def test_install_disables_scheduler_owned_stale_gang_eviction(monkeypatch):
+def test_install_preserves_global_stale_gang_eviction(monkeypatch):
     helm = Mock()
     monkeypatch.setattr(kai.sh, "helm", helm)
 
-    kai.install_kai_scheduler(KaiConfig(version="v0.16.9"))
+    kai.install_kai_scheduler(KaiConfig(version="v0.17.0"))
 
     assert helm.call_count == 2
     args = helm.call_args.args
     assert args[0] == "install"
-    setting = args.index("scheduler.args.default-staleness-grace-period=-1s")
-    assert args[setting - 1] == "--set-string"
-    assert args[args.index("--version") + 1] == "v0.16.9"
+    assert not any("staleness-grace-period" in arg for arg in args)
+    assert args[args.index("--version") + 1] == "v0.17.0"

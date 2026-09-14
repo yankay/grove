@@ -50,10 +50,10 @@ func TestSetup(t *testing.T) {
 	operatorCfg := &configv1alpha1.OperatorConfiguration{
 		Scheduler: configv1alpha1.SchedulerConfiguration{
 			Profiles: []configv1alpha1.SchedulerProfile{
-				{Name: configv1alpha1.SchedulerNameKai},
+				{Name: configv1alpha1.SchedulerNameKube},
 				{Name: configv1alpha1.SchedulerNameLPX},
 			},
-			DefaultProfileName: string(configv1alpha1.SchedulerNameKai),
+			DefaultProfileName: string(configv1alpha1.SchedulerNameKube),
 		},
 	}
 	configv1alpha1.SetObjectDefaults_OperatorConfiguration(operatorCfg)

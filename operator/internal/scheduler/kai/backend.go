@@ -20,6 +20,7 @@ import (
 	"maps"
 	"reflect"
 	"sort"
+	"time"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	apicommonconstants "github.com/ai-dynamo/grove/operator/api/common/constants"
@@ -32,6 +33,7 @@ import (
 	kaitopologyv1alpha1 "github.com/kai-scheduler/KAI-scheduler/pkg/apis/kai/v1alpha1"
 	kaischedulingv2alpha2 "github.com/kai-scheduler/KAI-scheduler/pkg/apis/scheduling/v2alpha2"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -61,6 +63,7 @@ const (
 	annotationValSkipPGR = "true"
 	annotationPodGroup   = "pod-group-name"
 	labelSubGroup        = "kai.scheduler/subgroup-name"
+	podGroupCRDName      = "podgroups.scheduling.run.ai"
 )
 
 // New creates a new KAI backend instance. profile is the scheduler profile for kai-scheduler;
@@ -82,11 +85,31 @@ func (b *schedulerBackend) Name() string {
 
 // Init registers the KAI API types into b.scheme and must be called before
 // that scheme is used to serialize or deserialize KAI objects.
-func (b *schedulerBackend) Init(_ client.Client) error {
+func (b *schedulerBackend) Init(directClient client.Client) error {
 	if err := kaitopologyv1alpha1.AddToScheme(b.scheme); err != nil {
 		return err
 	}
-	return kaischedulingv2alpha2.AddToScheme(b.scheme)
+	if err := kaischedulingv2alpha2.AddToScheme(b.scheme); err != nil {
+		return err
+	}
+	if err := apiextensionsv1.AddToScheme(b.scheme); err != nil {
+		return err
+	}
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	if err := directClient.Get(context.Background(), client.ObjectKey{Name: podGroupCRDName}, crd); err != nil {
+		return fmt.Errorf("KAI backend requires KAI v0.17.0 or newer: get PodGroup CRD: %w", err)
+	}
+	for _, version := range crd.Spec.Versions {
+		if version.Name != kaischedulingv2alpha2.SchemeGroupVersion.Version ||
+			!version.Served || version.Schema == nil || version.Schema.OpenAPIV3Schema == nil {
+			continue
+		}
+		field := version.Schema.OpenAPIV3Schema.Properties["spec"].Properties["stalenessGracePeriod"]
+		if field.Type == "string" {
+			return nil
+		}
+	}
+	return fmt.Errorf("KAI backend requires KAI v0.17.0 or newer with PodGroup.spec.stalenessGracePeriod on scheduling.run.ai/v2alpha2")
 }
 
 // SyncPodGang converts PodGang to KAI PodGroup and synchronizes it
@@ -246,6 +269,9 @@ func (b *schedulerBackend) buildPodGroupForPodGang(ctx context.Context, podGang 
 			Queue:             queueName,
 			PriorityClassName: podGang.Spec.PriorityClassName,
 			SubGroups:         subGroups,
+			// Grove owns gang termination. A partially populated wake must not let KAI
+			// evict surviving members, without changing policy for other workloads.
+			StalenessGracePeriod: &metav1.Duration{Duration: -time.Second},
 		},
 	}
 	if topologyConstraint != nil {
