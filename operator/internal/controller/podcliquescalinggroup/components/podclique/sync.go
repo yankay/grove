@@ -415,6 +415,13 @@ func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, 
 
 // processMinAvailableBreachedPCSGReplicas handles gang termination of PCSG replicas that have breached minimum availability requirements
 func (r _resource) processMinAvailableBreachedPCSGReplicas(ctx context.Context, logger logr.Logger, ss *syncSnapshot) error {
+	recovery, err := componentutils.GetGangRecoveryForChild(ss.pcs, ss.pcsg.ObjectMeta)
+	if err != nil {
+		return err
+	}
+	if recovery.Active() {
+		return nil
+	}
 	// If pcsg.spec.minAvailable is breached, then delegate the responsibility to the PodCliqueSet reconciler which after
 	// termination delay terminate the PodCliqueSet replica. No further processing is required to be done here.
 	minAvailableBreachedPCSGReplicas := len(ss.pcsgIndicesToTerminate) + len(ss.pcsgIndicesToRequeue)

@@ -26,9 +26,9 @@ import (
 	apiconstants "github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/e2e/testctx"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -378,22 +378,11 @@ func Test_GT7_FirstWakeArmsTerminationOnlyAfterHealthy(t *testing.T) {
 		workerName   = workloadName + "-0-worker"
 	)
 	ctx := context.Background()
-	tc, cleanup := testctx.PrepareTest(ctx, t, 1,
-		testctx.WithWorkload(&testctx.WorkloadConfig{
-			Name:         workloadName,
-			YAMLPath:     "../yaml/workload-idle-wake.yaml",
-			Namespace:    "default",
-			ExpectedPods: 0,
-		}),
-	)
+	tc, cleanup := prepareIdleWorkload(t, ctx, 1, workloadName, 0, nil)
 	defer cleanup()
 
 	cordoned := tc.SetupAndCordonNodes(1)
 	defer tc.UncordonNodes(cordoned)
-	if _, err := tc.DeployAndVerifyWorkload(); err != nil {
-		t.Fatalf("Failed to deploy idle workload: %v", err)
-	}
-
 	worker := waitForPCLQ(t, ctx, tc, workerName)
 	initialUID := worker.UID
 	if err := tc.Client.Patch(ctx,
@@ -424,8 +413,14 @@ func Test_GT7_FirstWakeArmsTerminationOnlyAfterHealthy(t *testing.T) {
 	if err := tc.Client.Delete(ctx, target); err != nil {
 		t.Fatalf("Failed to delete worker pod: %v", err)
 	}
-	waitForPCLQUIDChange(t, ctx, tc, workerName, initialUID)
-	assertPCLQReplicas(t, ctx, tc, workerName, 0)
+	waitForGangRecovery(ctx, t, tc, workloadName, componentutils.GangRecoveryRecreating)
+	assertPCLQReplicas(t, ctx, tc, workerName, 1)
+	if current := waitForPCLQ(t, ctx, tc, workerName); current.UID != initialUID {
+		t.Fatal("gang recovery replaced the scale target")
+	}
+	tc.UncordonNodes(cordoned)
+	waitForPodCountAndReady(t, tc, 1)
+	waitForGangRecovery(ctx, t, tc, workloadName, componentutils.GangRecoveryComplete)
 }
 
 // ---------- helpers ----------
@@ -479,23 +474,6 @@ func assertPCLQUIDStableFor(t *testing.T, ctx context.Context, tc *testctx.TestC
 			t.Fatal(ctx.Err())
 		case <-time.After(500 * time.Millisecond):
 		}
-	}
-}
-
-func waitForPCLQUIDChange(t *testing.T, ctx context.Context, tc *testctx.TestContext, name string, oldUID types.UID) {
-	t.Helper()
-	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
-		pclq := &grovecorev1alpha1.PodClique{}
-		err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: name}, pclq)
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		return pclq.UID != oldUID, nil
-	}); err != nil {
-		t.Fatalf("PodClique %s was not recycled after armed availability loss: %v", name, err)
 	}
 }
 

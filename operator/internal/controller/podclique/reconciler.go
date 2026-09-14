@@ -103,7 +103,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrlcommon.ReconcileAfter(podgangmigrator.MigrationRequeueInterval, "PodGang migration in progress for owner PodCliqueSet").Result()
 	}
 
-	reconcileSpecFlowResult := r.reconcileSpec(ctx, logger, pclq)
+	reconcileSpecFlowResult := r.reconcileGangRecovery(ctx, logger, pcs, pclq)
+	if !ctrlcommon.ShortCircuitReconcileFlow(reconcileSpecFlowResult) {
+		reconcileSpecFlowResult = r.reconcileSpec(ctx, logger, pclq)
+	}
 	statusReconcileResult := r.reconcileStatus(ctx, logger, pclq)
 	reconcileResult := ctrlcommon.MergeStepResults(reconcileSpecFlowResult, statusReconcileResult)
 

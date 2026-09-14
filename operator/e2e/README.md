@@ -7,53 +7,51 @@ This directory contains the E2E test infrastructure for the Grove Operator, incl
 ### Prerequisites
 
 The following tools must be installed:
-- **Docker** - For running containers and k3d
-- **skaffold** (v2.x) - For deploying Grove operator
-- **helm** - For deploying Helm charts
+- **kubectl** and **Helm** - For accessing the test cluster
 - **Go** (1.26.3+) - For running the tests
 
-The following tools are nice to have
-- **k3d** (v5.x) - For creating local Kubernetes clusters
+For a locally provisioned cluster, also install:
+- **Docker** and **k3d** (v5.x) - For running the cluster
+- **skaffold** (v2.x) - For deploying Grove operator
+- **jq** and **uv** - For the infrastructure scripts
 
 On macOS with Homebrew:
 ```bash
-brew install docker skaffold helm go
-```
-To install k3d
-```bash
-brew install k3d
+brew install docker k3d skaffold helm kubectl go jq uv
 ```
 
 
 ### Running Locally
 
-From the repository root:
+Against an existing, dedicated test cluster:
 ```bash
-make run-e2e
+KUBECONFIG=/path/to/test.kubeconfig make -C operator run-e2e
 ```
 
-Or directly from the operator directory:
+To provision the infrastructure, run tests, and clean up:
+
 ```bash
-cd operator
-make run-e2e
+make -C operator run-e2e-full
 ```
 
-The test suite will:
-1. Create a k3d cluster with 28 worker nodes
-2. Install Grove, Kai Scheduler, and GPU Operator
-3. Run all e2e testing suites
-4. Clean up the cluster
+The default `operator/hack/e2e.yaml` preset installs Grove and KAI in k3d and
+creates 30 KWOK nodes. `run-e2e` itself only runs tests; it does not provision
+or remove a cluster. For real worker containers, use `run-e2e-real-full`.
+The hibernation recovery tests below require real workers and Ready Pods,
+not simulated KWOK readiness.
 
 ### Hibernation Backend Tests
 
-The `Test_ZR*` and `Test_GS13*` tests also run against an existing cluster with KAI or Volcano.
+The `Test_ZR*`, `Test_GT7*`, and `Test_GS13*` tests also run against an existing cluster with KAI or Volcano.
 Use a dedicated cluster: these tests delete Grove workloads, cordon worker nodes,
 and restart the Grove operator.
 
 Install Grove in `grove-system` as `grove-operator`, enable the matching scheduler
 profile, and provide at least six Ready worker nodes labeled
-`node_role.e2e.grove.nvidia.com=agent`. For KAI, create the `test` queue and disable
-stale-gang eviction with `scheduler.args.default-staleness-grace-period=-1s`.
+`node_role.e2e.grove.nvidia.com=agent`. For KAI, install v0.17.0 or newer, including
+its updated PodGroup CRD, and create the `test` queue. Keep the scheduler's global
+stale-gang eviction default: Grove sets `spec.stalenessGracePeriod: "-1s"` only on
+its own PodGroups. The backend fails startup if the served CRD lacks this field.
 
 From the `operator` directory:
 
@@ -61,7 +59,7 @@ From the `operator` directory:
 KUBECONFIG=/path/to/test.kubeconfig \
 GROVE_E2E_SCHEDULER=volcano \
 GROVE_E2E_WORKLOAD_IMAGE=registry:5001/busybox:latest \
-go test -tags=e2e ./e2e/tests -run '^(Test_GS13|Test_ZR)' -count=1 -v -timeout=25m
+go test -tags=e2e ./e2e/tests -run '^(Test_GS13|Test_GT7|Test_ZR)' -count=1 -v -timeout=25m
 ```
 
 Use `kai-scheduler` for KAI. The two `GROVE_E2E_*` overrides apply only to the
@@ -69,21 +67,37 @@ hibernation fixture, not the rest of the E2E suite. Set `E2E_REGISTRY_PORT` when
 the host-side test image push endpoint uses a port other than `5001`; the workload
 image must be reachable from every worker.
 
+`Test_ZR8` covers automatic gang recovery with runtime targets different from the
+templates: an active standalone clique initialized at zero, an idle standalone
+clique initialized positive, and a scaling group scaled above its template.
+It holds one Pod's deletion, restarts the operator during the partial drain,
+accepts a concurrent scale update, and requires Ready replacements at the new
+target. A second recovery verifies re-arming and an idle scaling group across a
+restart during recreation. `Test_GT7` verifies that a first wake only arms
+termination after actual health and that recovery retains its positive target.
+
+Automatic recovery retains the PodClique and PodCliqueScalingGroup scale objects.
+PCS annotations record each replica's recovery epoch and phase; replacement Pods
+carry that epoch, so a controller restart or late old-epoch Pod creation cannot
+reset replica intent. Old Pods must drain before recreation, and recovery remains
+disarmed until replacement Pods satisfy the active components' availability
+thresholds. These controller-owned annotations are not a user-facing scale API.
+Replacement Pods resolve startup dependencies from current gang membership rather
+than retained dependencies on components that have since gone idle.
+Explicitly deleting a scale object or scaling in a top-level PCS replica is outside
+this recovery guarantee; a new logical component is initialized from its template.
+
 ### Running in CI/CD
 
-E2E tests are automatically run on GitHub Actions for:
-- **All non-draft pull requests** to `main`
-- **Draft pull requests** with the `run-e2e` label
-
-To trigger e2e tests on a draft PR:
-1. Add the `run-e2e` label to the pull request
-2. The workflow will run automatically
-
-The CI workflow is defined in `.github/workflows/e2e-test.yaml`.
+The E2E jobs in `.github/workflows/build-check-test.yaml` run from trusted
+`pull-request/<number>` branches when the path filter detects relevant changes
+under `operator/` or `.github/`. Adding a label to a draft PR alone does not
+override these gates.
 
 ## Managing Dependencies
 
-E2E test dependencies (container images and Helm charts) are managed in `dependencies.yaml`, similar to how Go dependencies are managed in `go.mod`.
+E2E test dependencies (container images and Helm charts) are managed in
+`operator/hack/infra_manager/dependencies.yaml`.
 
 ### File: `dependencies.yaml`
 
@@ -96,42 +110,49 @@ This file defines all external dependencies used in E2E tests:
 
 To update a dependency version:
 
-1. Edit `e2e/dependencies.yaml`
+1. Edit `operator/hack/infra_manager/dependencies.yaml`
 2. Update the `version` field for the desired component
-3. Run tests to verify: `cd e2e && go test -v`
+3. Recreate the dedicated cluster to install the new dependencies, then run
+   `make -C operator run-e2e` from the repository root.
 
 #### Example: Updating Kai Scheduler
 
 ```yaml
-helmCharts:
-  kaiScheduler:
-    releaseName: kai-scheduler
-    chartRef: oci://ghcr.io/kai-scheduler/kai-scheduler/kai-scheduler
-    version: v0.16.9  # <- Update this version
-    namespace: kai-scheduler
+kai_scheduler:
+  version: "v0.17.0"
 ```
 
-#### Example: Adding a New Image to Pre-pull
+#### Example: Adding a KAI Component Image to Pre-pull
 
 ```yaml
-images:
-  # ... existing images ...
-  - name: docker.io/myorg/myimage
-    version: v1.2.3
+kai_scheduler:
+  version: "v0.17.0"
+  images:
+    # Keep the other component images in this list.
+    - "ghcr.io/kai-scheduler/kai-scheduler/crd-upgrader"
 ```
+
+Component image entries omit tags; the pre-pull code appends the component's
+`version`. Arbitrary workload images need a corresponding pre-pull group in
+`operator/hack/infra_manager/orchestrator.py`; a top-level `images` list is not
+read by the infrastructure scripts.
 
 ## Troubleshooting
 
 ### Stale k3d Cluster
 
-If tests fail with cluster creation errors, clean up any existing cluster:
+If cluster creation fails, delete only the disposable cluster belonging to this
+test run, using its configured name:
 ```bash
-k3d cluster delete shared-e2e-test-cluster
+k3d cluster delete <test-cluster-name>
 ```
 
 ### Test Timeout
 
-E2E tests can take 10-15 minutes. If tests timeout, increase the timeout:
+The Makefile uses a 45-minute timeout. To set an explicit timeout against an
+existing cluster, run from the repository root:
 ```bash
-cd e2e && go test -tags=e2e ./tests/... -v -timeout 45m
+cd operator
+KUBECONFIG=/path/to/test.kubeconfig \
+go test -count=1 -tags=e2e ./e2e/tests/... -v -timeout=60m
 ```

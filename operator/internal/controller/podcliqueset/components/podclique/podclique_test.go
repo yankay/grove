@@ -468,7 +468,7 @@ func TestBuildResource_MNNVLInjection(t *testing.T) {
 					WithPodCliques(map[string]int32{pclqTemplateName: 1}).
 					Build(),
 			).Build()
-			err := operator.buildResource(logr.Discard(), pcs, pcsReplica, false, pgm, pclq)
+			err := operator.buildResource(logr.Discard(), pcs, pcsReplica, pgm, pclq)
 			require.NoError(t, err)
 
 			// Verify pod-level claims
@@ -532,7 +532,7 @@ func TestBuildResource_StripsTopologyAnnotation(t *testing.T) {
 			WithPodCliques(map[string]int32{"worker": 1}).
 			Build(),
 	).Build()
-	err := operator.buildResource(logr.Discard(), pcs, 0, false, pgm, pclq)
+	err := operator.buildResource(logr.Discard(), pcs, 0, pgm, pclq)
 	require.NoError(t, err)
 	require.NotNil(t, pclq.Annotations)
 	assert.Equal(t, "yes", pclq.Annotations["example.com/keep"])

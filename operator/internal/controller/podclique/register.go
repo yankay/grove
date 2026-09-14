@@ -78,6 +78,11 @@ func (r *Reconciler) RegisterWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(podCliqueSetPredicate()),
 		).
 		Watches(
+			&grovecorev1alpha1.PodCliqueSet{},
+			handler.EnqueueRequestsFromMapFunc(r.mapGangRecoveryToPCLQs()),
+			builder.WithPredicates(gangRecoveryPredicate()),
+		).
+		Watches(
 			&grovecorev1alpha1.PodCliqueScalingGroup{},
 			handler.EnqueueRequestsFromMapFunc(mapPodCliqueScalingGroupToPCLQs()),
 			builder.WithPredicates(podCliqueScalingGroupPredicate()),

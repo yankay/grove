@@ -75,6 +75,13 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 	pclqsPerPCSGReplica = pruneStrayPCSGPCLQs(pcsg, pclqsPerPCSGReplica)
 	mutateReplicas(logger, pcs, pcsg, pclqsPerPCSGReplica)
 	mutateMinAvailableBreachedCondition(logger, pcsg)
+	recovery, err := componentutils.GetGangRecoveryForChild(pcs, pcsg.ObjectMeta)
+	if err != nil {
+		return ctrlcommon.ReconcileWithErrors("could not read gang recovery", err)
+	}
+	if recovery.Active() {
+		componentutils.DisarmGangRecoveryBreach(&pcsg.Status.Conditions)
+	}
 	r.emitAllScheduledReplicasLostIfNeeded(pcsg, originalStatus.ScheduledReplicas)
 
 	if err = mutateSelector(pcs, pcsg); err != nil {
