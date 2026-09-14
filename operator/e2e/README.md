@@ -59,7 +59,7 @@ From the `operator` directory:
 KUBECONFIG=/path/to/test.kubeconfig \
 GROVE_E2E_SCHEDULER=volcano \
 GROVE_E2E_WORKLOAD_IMAGE=registry:5001/busybox:latest \
-go test -tags=e2e ./e2e/tests -run '^(Test_GS13|Test_GT7|Test_ZR)' -count=1 -v -timeout=25m
+go test -tags=e2e ./e2e/tests -run '^(Test_GS13|Test_GT7|Test_ZR)' -count=1 -v -timeout=45m
 ```
 
 Use `kai-scheduler` for KAI. The two `GROVE_E2E_*` overrides apply only to the
@@ -85,6 +85,14 @@ triggering PCS reconciliation. It requires fresh member PodCliques and Ready Pod
 in the new epoch, matching native PodGroup membership, and undisturbed anchor
 Pods.
 
+`Test_ZR11` drives real PCSG `/scale` updates: it grows from two to three
+replicas, then exercises `3 -> 2 -> 3` and `3 -> 0 -> 3` while holding an old
+ScaleOut Pod. It restarts Grove during deletion and requires fresh scheduling
+identity only after the old member drains. No synthetic PGM update or enqueue is
+used. `Test_ZR12` deletes membership while the idle scale target survives, then
+explicitly deletes that target. Membership reconstruction must preserve the live
+zero; target recreation must initialize from the template without a deadlock.
+
 Automatic recovery retains the PodClique and PodCliqueScalingGroup scale objects.
 PCS annotations record each replica's recovery epoch and phase; replacement Pods
 carry that epoch, so a controller restart or late old-epoch Pod creation cannot
@@ -98,6 +106,73 @@ Replacement Pods resolve startup dependencies from current gang membership rathe
 than retained dependencies on components that have since gone idle.
 Explicitly deleting a scale object or scaling in a top-level PCS replica is outside
 this recovery guarantee; a new logical component is initialized from its template.
+
+### KEDA Integration
+
+`Test_KEDA_ActiveFloorAndHibernation` is opt-in. Install KEDA with its CRDs,
+operator, admission webhook, and external metrics API in the same dedicated
+real-worker cluster described above. The test expects a single KEDA operator
+Pod with `app.kubernetes.io/name=keda-operator`. It restarts both Grove and KEDA;
+do not run it on a shared or production cluster.
+
+The verified configuration uses Kubernetes 1.35.0, KEDA 2.20.2, and Redis 7.4.2.
+Install KEDA into `keda`, or set `GROVE_E2E_KEDA_NAMESPACE` to its namespace:
+
+```bash
+helm repo add kedacore https://kedacore.github.io/charts
+helm repo update kedacore
+helm --kubeconfig /path/to/test.kubeconfig upgrade --install keda kedacore/keda \
+  --version 2.20.2 --namespace keda --create-namespace --wait --timeout=8m
+kubectl --kubeconfig /path/to/test.kubeconfig wait \
+  --for=condition=Available apiservice/v1beta1.external.metrics.k8s.io --timeout=120s
+```
+
+From `operator`, run against each configured scheduler separately:
+
+```bash
+KUBECONFIG=/path/to/test.kubeconfig \
+GROVE_E2E_KEDA=true \
+GROVE_E2E_SCHEDULER=volcano \
+GROVE_E2E_WORKLOAD_IMAGE=registry:5001/busybox:latest \
+go test -tags=e2e ./e2e/tests -run '^Test_KEDA_' -count=2 -v -timeout=45m
+```
+
+The test creates an ephemeral unauthenticated Redis queue and a ScaledObject for
+each target kind, standalone PodClique and PodCliqueScalingGroup. Override
+`GROVE_E2E_REDIS_IMAGE` when workers use a local registry. No KEDA Go module
+dependency is added to the operator, and ordinary E2E runs skip this test.
+
+Each target completes two demand cycles through `0 -> 2 -> 4 -> 2 -> 0`, using
+`minReplicaCount: 2`, `idleReplicaCount: 0`, and `maxReplicaCount: 4`.
+Assertions inspect the real `/scale` target, Ready workload Pods, stable target
+UIDs, and an unaffected always-active component. Idle targets must remain zero
+after Grove and KEDA restarts. A deliberately incompatible active floor of one
+must surface `KEDAScaleTargetActivationFailed` without changing the target;
+restoring two must reactivate it.
+
+This is Redis-triggered activation and HPA integration, not coverage of every
+KEDA scaler, fallback policy, authentication mode, or rolling-update workflow.
+
+### Repeated And Randomized Tests
+
+Increase `-count` to repeat lifecycle scenarios against an existing dedicated
+cluster. Runs sharing a cluster must remain serial because cleanup deletes Grove
+workloads and tests change node availability.
+
+The membership state-machine fuzzer runs without a cluster. From `operator`:
+
+```bash
+go test ./internal/controller/podcliqueset/components/podgangmap \
+  -run '^$' -fuzz '^FuzzHibernationMembership$' -fuzztime=3m -parallel=2
+go test -tags=e2e ./e2e/grove/workload ./e2e/k8s/pods -count=10
+```
+
+Randomized sequences cover two independent scaling groups and a standalone
+clique: idle/wake/scale transitions, complete and unique membership, stable
+anchors, monotonic epochs when an empty ScaleOut slot is reused, input
+immutability, observation-order independence, and steady-state idempotence.
+Helper unit tests ensure asynchronous waits do not mistake stale HPA
+configuration or an old/terminating controller Pod for successful convergence.
 
 ### Running in CI/CD
 

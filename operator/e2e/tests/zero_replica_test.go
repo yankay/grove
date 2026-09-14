@@ -33,6 +33,7 @@ import (
 	"github.com/ai-dynamo/grove/operator/e2e/grove/podgangmap"
 	"github.com/ai-dynamo/grove/operator/e2e/grove/podgroup"
 	"github.com/ai-dynamo/grove/operator/e2e/grove/workload"
+	"github.com/ai-dynamo/grove/operator/e2e/k8s/pods"
 	"github.com/ai-dynamo/grove/operator/e2e/setup"
 	"github.com/ai-dynamo/grove/operator/e2e/testctx"
 	internalconstants "github.com/ai-dynamo/grove/operator/internal/constants"
@@ -44,6 +45,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -1414,35 +1416,8 @@ func assertPodGangUIDs(t *testing.T, ctx context.Context, tc *testctx.TestContex
 
 func restartOperator(t *testing.T, ctx context.Context, tc *testctx.TestContext) {
 	t.Helper()
-	operatorPods := &corev1.PodList{}
-	if err := tc.Client.List(ctx, operatorPods,
-		client.InNamespace(setup.OperatorNamespace),
-		setup.OperatorPodLabels,
-	); err != nil {
-		t.Fatalf("Failed to list operator pods: %v", err)
-	}
-	if len(operatorPods.Items) != 1 {
-		t.Fatalf("operator pod count = %d, want 1", len(operatorPods.Items))
-	}
-	oldUID := operatorPods.Items[0].UID
-	if err := tc.Client.Delete(ctx, &operatorPods.Items[0]); err != nil {
-		t.Fatalf("Failed to restart operator pod %s: %v", operatorPods.Items[0].Name, err)
-	}
-	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
-		current := &corev1.PodList{}
-		if err := tc.Client.List(ctx, current,
-			client.InNamespace(setup.OperatorNamespace),
-			setup.OperatorPodLabels,
-		); err != nil {
-			return false, err
-		}
-		for i := range current.Items {
-			if current.Items[i].UID != oldUID && isPodReady(&current.Items[i]) {
-				return true, nil
-			}
-		}
-		return false, nil
-	}); err != nil {
+	if err := pods.NewPodManager(tc.Client, Logger).RestartAndWait(ctx, setup.OperatorNamespace,
+		labels.SelectorFromSet(labels.Set(setup.OperatorPodLabels)).String(), tc.Timeout, tc.Interval); err != nil {
 		t.Fatalf("Operator did not recover after restart: %v", err)
 	}
 }
