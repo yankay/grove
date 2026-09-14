@@ -36,16 +36,17 @@ func TestReconcileHibernatingComponents(t *testing.T) {
 		WithScalingGroupConfig(testPCSGName, []string{"c"}, 0, 2).
 		WithPodCliqueSetGenerationHash(ptr.To(testGenHash)).Build()
 	tests := []struct {
-		name            string
-		entries         []grovecorev1alpha1.PodGangEntry
-		cliques         []grovecorev1alpha1.PodClique
-		groups          []grovecorev1alpha1.PodCliqueScalingGroup
-		wantAnchorCount int
-		wantAnchorIndex int32
-		wantWorker      int32
-		wantIndices     []int32
-		wantEpoch       string
-		wantDependsOn   []string
+		name              string
+		entries           []grovecorev1alpha1.PodGangEntry
+		cliques           []grovecorev1alpha1.PodClique
+		groups            []grovecorev1alpha1.PodCliqueScalingGroup
+		wantAnchorCount   int
+		wantAnchorIndex   int32
+		wantWorker        int32
+		wantAnchorIndices []int32
+		wantIndices       []int32
+		wantEpoch         string
+		wantDependsOn     []string
 	}{
 		{
 			name: "standalone wake restores the running anchor",
@@ -59,41 +60,43 @@ func TestReconcileHibernatingComponents(t *testing.T) {
 			wantDependsOn:   []string{"100"},
 		},
 		{
-			name: "PCSG wake places every replica in scaleout behind the running anchor",
+			name: "PCSG wake restores minimum replicas into the running anchor",
 			entries: []grovecorev1alpha1.PodGangEntry{
 				anchorEntry(map[string]int32{"router": 1}, nil), scaleOutEntry(nil),
 			},
-			groups:          []grovecorev1alpha1.PodCliqueScalingGroup{pcsg(3)},
-			wantAnchorCount: 1,
-			wantIndices:     []int32{0, 1, 2},
-			wantEpoch:       "5000",
-			wantDependsOn:   []string{"100"},
+			groups:            []grovecorev1alpha1.PodCliqueScalingGroup{pcsg(3)},
+			wantAnchorCount:   1,
+			wantAnchorIndices: []int32{0, 1},
+			wantIndices:       []int32{2},
+			wantEpoch:         "5000",
+			wantDependsOn:     []string{"100"},
 		},
 		{
-			name: "PCSG-only wake does not depend on an unmaterialized anchor",
+			name: "PCSG-only wake materializes the existing anchor",
 			entries: []grovecorev1alpha1.PodGangEntry{
 				anchorEntry(nil, nil), scaleOutEntry(nil),
 			},
-			groups:          []grovecorev1alpha1.PodCliqueScalingGroup{pcsg(2)},
-			wantAnchorCount: 1,
-			wantIndices:     []int32{0, 1},
-			wantEpoch:       "5000",
+			groups:            []grovecorev1alpha1.PodCliqueScalingGroup{pcsg(2)},
+			wantAnchorCount:   1,
+			wantAnchorIndices: []int32{0, 1},
+			wantEpoch:         "102",
+			wantDependsOn:     []string{"100"},
 		},
 		{
-			name: "concurrent wake restores standalone anchor and independently scales PCSG replicas",
+			name: "concurrent wake restores standalone and PCSG anchor membership",
 			entries: []grovecorev1alpha1.PodGangEntry{
 				anchorEntry(nil, nil), scaleOutEntry(nil),
 			},
-			cliques:         []grovecorev1alpha1.PodClique{standalonePCLQ("worker", 3)},
-			groups:          []grovecorev1alpha1.PodCliqueScalingGroup{pcsg(2)},
-			wantAnchorCount: 1,
-			wantWorker:      3,
-			wantIndices:     []int32{0, 1},
-			wantEpoch:       "5000",
-			wantDependsOn:   []string{"100"},
+			cliques:           []grovecorev1alpha1.PodClique{standalonePCLQ("worker", 3)},
+			groups:            []grovecorev1alpha1.PodCliqueScalingGroup{pcsg(2)},
+			wantAnchorCount:   1,
+			wantWorker:        3,
+			wantAnchorIndices: []int32{0, 1},
+			wantEpoch:         "102",
+			wantDependsOn:     []string{"100"},
 		},
 		{
-			name: "standalone wake after PCSG wake leaves active scaleout dependencies unchanged",
+			name: "legacy independently placed PCSG replicas are not moved",
 			entries: []grovecorev1alpha1.PodGangEntry{
 				anchorEntry(nil, nil),
 				testutils.NewPodGangEntryBuilder(testGenHash, "102").
@@ -115,25 +118,26 @@ func TestReconcileHibernatingComponents(t *testing.T) {
 					WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(2).Build(),
 				scaleOutEntry(nil),
 			},
-			cliques:         []grovecorev1alpha1.PodClique{standalonePCLQ("worker", 3)},
-			groups:          []grovecorev1alpha1.PodCliqueScalingGroup{pcsg(2)},
-			wantAnchorCount: 2,
-			wantAnchorIndex: 2,
-			wantWorker:      3,
-			wantIndices:     []int32{0, 1},
-			wantEpoch:       "5000",
-			wantDependsOn:   []string{"200"},
+			cliques:           []grovecorev1alpha1.PodClique{standalonePCLQ("worker", 3)},
+			groups:            []grovecorev1alpha1.PodCliqueScalingGroup{pcsg(2)},
+			wantAnchorCount:   2,
+			wantAnchorIndex:   2,
+			wantWorker:        3,
+			wantAnchorIndices: []int32{0, 1},
+			wantEpoch:         "102",
+			wantDependsOn:     []string{"100"},
 		},
 		{
 			name: "anchor scale-in and PCSG wake do not leave a dangling dependency",
 			entries: []grovecorev1alpha1.PodGangEntry{
 				anchorEntry(map[string]int32{"router": 1}, nil), scaleOutEntry(nil),
 			},
-			cliques:         []grovecorev1alpha1.PodClique{standalonePCLQ("router", 0)},
-			groups:          []grovecorev1alpha1.PodCliqueScalingGroup{pcsg(2)},
-			wantAnchorCount: 1,
-			wantIndices:     []int32{0, 1},
-			wantEpoch:       "5000",
+			cliques:           []grovecorev1alpha1.PodClique{standalonePCLQ("router", 0)},
+			groups:            []grovecorev1alpha1.PodCliqueScalingGroup{pcsg(2)},
+			wantAnchorCount:   1,
+			wantAnchorIndices: []int32{0, 1},
+			wantEpoch:         "102",
+			wantDependsOn:     []string{"100"},
 		},
 	}
 	for _, tt := range tests {
@@ -148,10 +152,13 @@ func TestReconcileHibernatingComponents(t *testing.T) {
 			require.Len(t, anchors, tt.wantAnchorCount)
 			assert.Equal(t, tt.wantAnchorIndex, *anchors[0].AnchorIndex)
 			assert.Equal(t, tt.wantWorker, anchors[0].PodCliques["worker"])
+			assert.Equal(t, tt.wantAnchorIndices, anchors[0].PCSGReplicaIndices[testPCSGName])
 			originalAnchors := currentGenerationAnchorsByIndexDesc(tt.entries, testGenHash)
 			require.Len(t, anchors, len(originalAnchors))
 			for i, anchor := range anchors {
-				assert.Empty(t, anchor.PCSGReplicaIndices)
+				if i > 0 {
+					assert.Empty(t, anchor.PCSGReplicaIndices)
+				}
 				assert.Equal(t, originalAnchors[i].AnchorIndex, anchor.AnchorIndex)
 				assert.Equal(t, originalAnchors[i].Epoch, anchor.Epoch)
 			}
@@ -182,11 +189,12 @@ func TestRepeatedHibernationAfterGenerationChange(t *testing.T) {
 	for range 3 {
 		woken, err := reconcileEntries(clk, pcs, 0, pgm, nil,
 			[]grovecorev1alpha1.PodClique{standalonePCLQ("worker", 2)},
-			[]grovecorev1alpha1.PodCliqueScalingGroup{pcsg(2)})
+			[]grovecorev1alpha1.PodCliqueScalingGroup{pcsg(3)})
 		require.NoError(t, err)
 		require.Len(t, woken, 2)
 		scaleOut := testutils.EntryByRole(woken, grovecorev1alpha1.PodGangEntryRoleScaleOut)
-		assert.Equal(t, []int32{0, 1}, scaleOut.PCSGReplicaIndices[testPCSGName])
+		assert.Equal(t, []int32{2}, scaleOut.PCSGReplicaIndices[testPCSGName])
+		assert.Equal(t, []int32{0, 1}, testutils.EntryByRole(woken, grovecorev1alpha1.PodGangEntryRoleAnchor).PCSGReplicaIndices[testPCSGName])
 		assert.Equal(t, []string{"100"}, scaleOut.DependsOn)
 		assert.Equal(t, "new-hash", scaleOut.PodCliqueSetGenerationHash)
 		epoch, err := strconv.ParseInt(scaleOut.Epoch, 10, 64)
@@ -208,7 +216,7 @@ func TestRepeatedHibernationAfterGenerationChange(t *testing.T) {
 	}
 }
 
-func TestMultiplePCSGWakesShareScaleOutWithoutJoiningAnchor(t *testing.T) {
+func TestMultiplePCSGWakesRestoreAnchorQuorums(t *testing.T) {
 	pcs := testutils.NewPodCliqueSetBuilder(testPCSName, testNamespace, testPCSUID).
 		WithStandaloneCliqueReplicas("router", 1).
 		WithScalingGroupConfig(testPCSGName, []string{"prefill"}, 0, 2).
@@ -226,10 +234,13 @@ func TestMultiplePCSGWakesShareScaleOutWithoutJoiningAnchor(t *testing.T) {
 	entries, err := reconcileEntries(clk, pcs, 0, pgm, nil, nil, groups)
 	require.NoError(t, err)
 	require.Len(t, entries, 2)
-	assert.Equal(t, pgm.Spec.Entries[0], testutils.EntryByRole(entries, grovecorev1alpha1.PodGangEntryRoleAnchor))
+	anchor := testutils.EntryByRole(entries, grovecorev1alpha1.PodGangEntryRoleAnchor)
+	assert.Equal(t, "100", anchor.Epoch)
+	assert.Equal(t, map[string]int32{"router": 1}, anchor.PodCliques)
+	assert.Equal(t, map[string][]int32{testPCSGName: {0, 1}, "decode": {0, 1}}, anchor.PCSGReplicaIndices)
 	scaleOut := testutils.EntryByRole(entries, grovecorev1alpha1.PodGangEntryRoleScaleOut)
 	require.Equal(t, grovecorev1alpha1.PodGangEntryRoleScaleOut, scaleOut.Role)
-	assert.Equal(t, map[string][]int32{testPCSGName: {0, 1, 2}, "decode": {0, 1}}, scaleOut.PCSGReplicaIndices)
+	assert.Equal(t, map[string][]int32{testPCSGName: {2}}, scaleOut.PCSGReplicaIndices)
 	assert.Equal(t, "5000", scaleOut.Epoch)
 	assert.Equal(t, []string{"100"}, scaleOut.DependsOn)
 

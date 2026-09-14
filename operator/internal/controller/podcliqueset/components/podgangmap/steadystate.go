@@ -304,8 +304,8 @@ func currentGenerationAnchorsByIndexDesc(entries []grovecorev1alpha1.PodGangEntr
 }
 
 // reconcilePCSGReplicaIndices diffs each PodCliqueScalingGroup's replica-index count across all
-// entries against its live Spec.Replicas. Wake is ordinary scale-out: each replica gets its own
-// scaled PodGang, including replicas below the PCSG's MinAvailable index.
+// entries against its live Spec.Replicas. A wake restores the minimum replicas into the highest
+// current-generation anchor; subsequent scale-out preserves already-placed replicas.
 func reconcilePCSGReplicaIndices(entries []grovecorev1alpha1.PodGangEntry,
 	pcs *grovecorev1alpha1.PodCliqueSet,
 	pcsgs []grovecorev1alpha1.PodCliqueScalingGroup,
@@ -321,7 +321,27 @@ func reconcilePCSGReplicaIndices(entries []grovecorev1alpha1.PodGangEntry,
 		diff := int(pcsg.Spec.Replicas) - currentCount
 		switch {
 		case diff > 0:
-			if err := appendScaleOutReplicaIndices(entries, currentHash, pcsgConfigName, lo.RangeFrom[int32](int32(currentCount), diff)); err != nil {
+			firstScaleOutIndex := int32(currentCount)
+			if currentCount == 0 {
+				anchors := currentGenerationAnchorsByIndexDesc(entries, currentHash)
+				if len(anchors) == 0 {
+					return fmt.Errorf("current generation %q has no anchor for waking PodCliqueScalingGroup %s", currentHash, pcsg.Name)
+				}
+				minAvailable := ptr.Deref(pcsg.Spec.MinAvailable, 1)
+				if pcsg.Spec.Replicas < minAvailable {
+					return fmt.Errorf("PodCliqueScalingGroup %s has replicas %d below minAvailable %d", pcsg.Name, pcsg.Spec.Replicas, minAvailable)
+				}
+				if anchors[0].PCSGReplicaIndices == nil {
+					anchors[0].PCSGReplicaIndices = make(map[string][]int32)
+				}
+				anchors[0].PCSGReplicaIndices[pcsgConfigName] = lo.RangeFrom[int32](0, int(minAvailable))
+				firstScaleOutIndex = minAvailable
+			}
+			if firstScaleOutIndex == pcsg.Spec.Replicas {
+				continue
+			}
+			if err := appendScaleOutReplicaIndices(entries, currentHash, pcsgConfigName,
+				lo.RangeFrom(firstScaleOutIndex, int(pcsg.Spec.Replicas-firstScaleOutIndex))); err != nil {
 				return err
 			}
 		case diff < 0:

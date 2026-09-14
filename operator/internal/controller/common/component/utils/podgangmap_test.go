@@ -251,7 +251,6 @@ func TestPodGangNameForPCSGReplica(t *testing.T) {
 		{"anchor replica resolves to the anchor PodGang name", 0, apicommon.GenerateAnchorPodGangName(pcsRnr, anchorEpoch)},
 		{"tail replica resolves to a non-anchor PodGang name", 2, apicommon.GenerateNonAnchorPodGangName(pcsRnr, tailEpoch, pcsgName, 2)},
 		{"placed scale-out replica resolves to a non-anchor PodGang name", 3, apicommon.GenerateNonAnchorPodGangName(pcsRnr, scaleOutEpoch, pcsgName, 3)},
-		{"not-yet-placed scale-out replica falls back to the ScaleOut entry", 4, apicommon.GenerateNonAnchorPodGangName(pcsRnr, scaleOutEpoch, pcsgName, 4)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -260,6 +259,12 @@ func TestPodGangNameForPCSGReplica(t *testing.T) {
 			assert.Equal(t, test.expectedName, actual)
 		})
 	}
+
+	t.Run("unplaced replica waits even when a ScaleOut slot exists", func(t *testing.T) {
+		name, err := PodGangNameForPCSGReplica(pgm, pcsRnr, pcsgName, 4)
+		require.Error(t, err)
+		assert.Empty(t, name)
+	})
 
 	t.Run("errors when no owning entry and no ScaleOut entry exist", func(t *testing.T) {
 		anchorOnly := testutils.NewPodGangMapBuilder(pcsName, namespace, "uid", 0).WithEntries(
