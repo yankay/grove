@@ -27,6 +27,7 @@ import (
 	"github.com/ai-dynamo/grove/operator/internal/scheduler/kai"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 
+	"github.com/go-logr/logr"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,6 +35,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
@@ -1887,6 +1889,180 @@ func TestValidateTopologyConstraintsPCSTopologyName(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
+		})
+	}
+}
+
+func TestScalingGroupMemberReplicaValidation(t *testing.T) {
+	tests := []struct {
+		name          string
+		operation     admissionv1.Operation
+		prepareOld    func(*grovecorev1alpha1.PodCliqueSet)
+		mutate        func(*grovecorev1alpha1.PodCliqueSet)
+		errorMatchers []testutils.ErrorMatcher
+	}{
+		{
+			name:      "create rejects zero member replicas in an active group",
+			operation: admissionv1.Create,
+			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+			},
+			errorMatchers: []testutils.ErrorMatcher{
+				{ErrorType: field.ErrorTypeInvalid, Field: "spec.template.cliques[1].spec.replicas"},
+			},
+		},
+		{
+			name:      "create rejects zero member replicas even in an idle group",
+			operation: admissionv1.Create,
+			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+				pcs.Spec.Template.PodCliqueScalingGroupConfigs[0].Replicas = ptr.To(int32(0))
+			},
+			errorMatchers: []testutils.ErrorMatcher{
+				{ErrorType: field.ErrorTypeInvalid, Field: "spec.template.cliques[1].spec.replicas"},
+			},
+		},
+		{
+			name:      "create allows idle standalone and idle group with positive member replicas",
+			operation: admissionv1.Create,
+			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.PodCliqueScalingGroupConfigs[0].Replicas = ptr.To(int32(0))
+			},
+		},
+		{
+			name:      "update rejects positive to zero member replicas",
+			operation: admissionv1.Update,
+			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+			},
+			errorMatchers: []testutils.ErrorMatcher{
+				{ErrorType: field.ErrorTypeInvalid, Field: "spec.template.cliques[1].spec.replicas"},
+			},
+		},
+		{
+			name:      "update rejects zero member replicas while idling the group",
+			operation: admissionv1.Update,
+			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+				pcs.Spec.Template.PodCliqueScalingGroupConfigs[0].Replicas = ptr.To(int32(0))
+			},
+			errorMatchers: []testutils.ErrorMatcher{
+				{ErrorType: field.ErrorTypeInvalid, Field: "spec.template.cliques[1].spec.replicas"},
+			},
+		},
+		{
+			name:      "update uses the new member index after reordering",
+			operation: admissionv1.Update,
+			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+				pcs.Spec.Template.Cliques[0], pcs.Spec.Template.Cliques[1] = pcs.Spec.Template.Cliques[1], pcs.Spec.Template.Cliques[0]
+			},
+			errorMatchers: []testutils.ErrorMatcher{
+				{ErrorType: field.ErrorTypeInvalid, Field: "spec.template.cliques[0].spec.replicas"},
+			},
+		},
+		{
+			name:      "update allows standalone positive to zero replicas",
+			operation: admissionv1.Update,
+			prepareOld: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.Cliques[0].Spec.Replicas = 1
+			},
+			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.Cliques[0].Spec.Replicas = 0
+			},
+		},
+		{
+			name:      "update allows group positive to zero replicas with positive member replicas",
+			operation: admissionv1.Update,
+			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.PodCliqueScalingGroupConfigs[0].Replicas = ptr.To(int32(0))
+			},
+		},
+		{
+			name:      "metadata-only update preserves legacy zero member replicas",
+			operation: admissionv1.Update,
+			prepareOld: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+			},
+			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Annotations = map[string]string{"example.com/note": "updated"}
+			},
+		},
+		{
+			name:      "finalizer removal preserves legacy zero member replicas",
+			operation: admissionv1.Update,
+			prepareOld: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+				pcs.Finalizers = []string{"grove.io/finalizer"}
+				pcs.DeletionTimestamp = ptr.To(metav1.Now())
+			},
+			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Finalizers = nil
+			},
+		},
+		{
+			name:      "update repairs legacy zero member replicas",
+			operation: admissionv1.Update,
+			prepareOld: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+			},
+			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = 1
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldPCS := createTestPodCliqueSet("inference")
+			oldPCS.Spec.Template.Cliques[0].Spec.Replicas = 0
+			oldPCS.Spec.Template.Cliques = append(oldPCS.Spec.Template.Cliques, createDummyPodCliqueTemplate("worker"))
+			oldPCS.Spec.Template.PodCliqueScalingGroupConfigs = []grovecorev1alpha1.PodCliqueScalingGroupConfig{{
+				Name:         "workers",
+				CliqueNames:  []string{"worker"},
+				Replicas:     ptr.To(int32(1)),
+				MinAvailable: ptr.To(int32(1)),
+			}}
+			if tc.prepareOld != nil {
+				tc.prepareOld(oldPCS)
+			}
+			newPCS := oldPCS.DeepCopy()
+			tc.mutate(newPCS)
+
+			handler := &Handler{
+				logger:    logr.Discard(),
+				tasConfig: defaultTASConfig(),
+				schedulerConfig: groveconfigv1alpha1.SchedulerConfiguration{
+					Profiles:           []groveconfigv1alpha1.SchedulerProfile{{Name: groveconfigv1alpha1.SchedulerNameKube}},
+					DefaultProfileName: string(groveconfigv1alpha1.SchedulerNameKube),
+				},
+				schedRegistry: testutils.NewDefaultFakeRegistry(),
+			}
+			var err error
+			switch tc.operation {
+			case admissionv1.Create:
+				_, err = handler.ValidateCreate(context.Background(), newPCS)
+			case admissionv1.Update:
+				_, err = handler.ValidateUpdate(context.Background(), oldPCS, newPCS)
+			default:
+				t.Fatalf("unsupported operation %s", tc.operation)
+			}
+			if len(tc.errorMatchers) == 0 {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			var aggregate utilerrors.Aggregate
+			require.ErrorAs(t, err, &aggregate)
+			require.Len(t, aggregate.Errors(), len(tc.errorMatchers))
+			var errs field.ErrorList
+			for _, err := range aggregate.Errors() {
+				var fieldErr *field.Error
+				require.ErrorAs(t, err, &fieldErr)
+				assert.Equal(t, int32(0), fieldErr.BadValue)
+				errs = append(errs, fieldErr)
+			}
+			testutils.AssertErrorMatches(t, errs, tc.errorMatchers)
 		})
 	}
 }

@@ -453,6 +453,12 @@ func (v *pcsValidator) validatePodCliqueTemplateSpec(cliqueTemplateSpec *groveco
 	allErrs = append(allErrs, metav1validation.ValidateLabels(cliqueTemplateSpec.Labels, fldPath.Child("labels"))...)
 	allErrs = append(allErrs, apivalidation.ValidateAnnotations(cliqueTemplateSpec.Annotations, fldPath.Child("annotations"))...)
 
+	// Updates check the old value separately so legacy zero-valued members do not block metadata changes.
+	if v.operation == admissionv1.Create && scalingGroupCliqueNames.Has(cliqueTemplateSpec.Name) && cliqueTemplateSpec.Spec.Replicas == 0 {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("spec", "replicas"), cliqueTemplateSpec.Spec.Replicas,
+			"must be greater than 0 for a PodClique that is part of a scaling group; set the scaling group's replicas to 0 instead"))
+	}
+
 	allErrs = append(allErrs, v.validateResourceSharingSpecs(cliqueTemplateSpec.ResourceSharing, fldPath.Child("resourceSharing"))...)
 	warnings, errs := v.validatePodCliqueSpec(cliqueTemplateSpec.Name, cliqueTemplateSpec.Spec, fldPath.Child("spec"))
 	if len(errs) != 0 {
@@ -985,6 +991,7 @@ func (v *pcsValidator) validatePodCliqueUpdate(oldCliques []*grovecorev1alpha1.P
 		oldCliqueIndexMap[clique.Name] = lo.Tuple2[int, *grovecorev1alpha1.PodCliqueTemplateSpec]{A: i, B: clique}
 	})
 	orderIsEnforced := requiresOrderValidation(v.pcs.Spec.Template.StartupType)
+	scalingGroupCliqueNames := v.getScalingGroupCliqueNames()
 	// Validate each new clique against its corresponding old clique
 	for newCliqueIndex, newClique := range newCliques {
 		oldIndexCliqueTuple, exists := oldCliqueIndexMap[newClique.Name]
@@ -1000,6 +1007,12 @@ func (v *pcsValidator) validatePodCliqueUpdate(oldCliques []*grovecorev1alpha1.P
 			allErrs = append(allErrs, field.Invalid(fldPath, newClique.Name,
 				fmt.Sprintf("clique order cannot be changed when StartupType is InOrder or Explicit. Expected '%s' at position %d, got '%s'",
 					oldIndexCliqueTuple.B.Name, newCliqueIndex, newClique.Name)))
+		}
+
+		// Preserve unchanged legacy zero values, but do not allow members to become independently idle.
+		if scalingGroupCliqueNames.Has(newClique.Name) && newClique.Spec.Replicas == 0 {
+			allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.Spec.Replicas, oldIndexCliqueTuple.B.Spec.Replicas,
+				fldPath.Index(newCliqueIndex).Child("spec", "replicas"))...)
 		}
 
 		// Validate immutable PodClique fields
