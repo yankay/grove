@@ -219,6 +219,43 @@ func TestBuildBootstrapEntries(t *testing.T) {
 	}
 }
 
+func TestCurrentGenerationScaleOutEntry(t *testing.T) {
+	current := scaleOutEntry(nil)
+	old := current.DeepCopy()
+	old.PodCliqueSetGenerationHash = "old-hash"
+	old.Epoch = "99"
+	tests := []struct {
+		name    string
+		entries []grovecorev1alpha1.PodGangEntry
+		want    string
+		wantErr string
+	}{
+		{name: "missing entry"},
+		{name: "old generation is ignored", entries: []grovecorev1alpha1.PodGangEntry{*old}},
+		{name: "selects current generation", entries: []grovecorev1alpha1.PodGangEntry{*old, anchorEntry(nil, nil), current}, want: current.Epoch},
+		{name: "rejects duplicates", entries: []grovecorev1alpha1.PodGangEntry{current, current}, wantErr: `current generation "` + testGenHash + `" has 2 ScaleOut entries`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry, err := currentGenerationScaleOutEntry(tt.entries, testGenHash)
+			if tt.wantErr != "" {
+				require.EqualError(t, err, tt.wantErr)
+				require.Nil(t, entry)
+				return
+			}
+			require.NoError(t, err)
+			if tt.want == "" {
+				require.Nil(t, entry)
+				return
+			}
+			require.NotNil(t, entry)
+			assert.Equal(t, tt.want, entry.Epoch)
+			entry.PCSGReplicaIndices = map[string][]int32{testPCSGName: {2}}
+			assert.Equal(t, []int32{2}, tt.entries[2].PCSGReplicaIndices[testPCSGName])
+		})
+	}
+}
+
 func TestEpochByRoleFromPodGangs(t *testing.T) {
 	tests := []struct {
 		name     string

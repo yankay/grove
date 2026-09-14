@@ -195,25 +195,27 @@ func reconcileEntries(clk clock.Clock,
 		}
 	}
 
-	if scaleOutEpoch != "" {
-		entries = ensureScaleOutEntry(entries, pcs, scaleOutEpoch)
+	hasScalingGroups := len(pcs.Spec.Template.PodCliqueScalingGroupConfigs) > 0
+	if scaleOutEpoch != "" && hasScalingGroups {
+		entries = appendScaleOutEntry(entries, pcs, scaleOutEpoch)
 	}
 	epochs, err := newEpochAllocator(entries, clk.Now().UnixNano())
 	if err != nil {
 		return nil, err
 	}
 	currentHash := *pcs.Status.CurrentGenerationHash
-	scaleOutCount := countScaleOutEntries(entries, currentHash)
-	if scaleOutCount > 1 {
-		return nil, fmt.Errorf("current generation %q has %d ScaleOut entries", currentHash, scaleOutCount)
+	scaleOut, err := currentGenerationScaleOutEntry(entries, currentHash)
+	if err != nil {
+		return nil, err
 	}
-	if len(pcs.Spec.Template.PodCliqueScalingGroupConfigs) > 0 && scaleOutCount == 0 {
-		entries = ensureScaleOutEntry(entries, pcs, epochs.allocate())
+	if hasScalingGroups && scaleOut == nil {
+		entries = appendScaleOutEntry(entries, pcs, epochs.allocate())
+		scaleOut = &entries[len(entries)-1]
 	}
 	if err = refreshStandalonePodCliqueCounts(entries, pcs, standalonePCLQs, pcsReplicaIndex); err != nil {
 		return nil, err
 	}
-	err = reconcilePCSGReplicaIndices(entries, pcs, pcsgs, pcsReplicaIndex)
+	err = reconcilePCSGReplicaIndices(entries, scaleOut, pcs, pcsgs, pcsReplicaIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -221,15 +223,24 @@ func reconcileEntries(clk clock.Clock,
 	if pgm != nil {
 		previous = pgm.Spec.Entries
 	}
-	reconcileScaleOutEntryIdentity(entries, previous, currentHash, epochs)
+	reconcileScaleOutEntryIdentity(scaleOut, entries, previous, currentHash, epochs)
 	return removeEmptyEntries(entries, currentHash), nil
 }
 
-func countScaleOutEntries(entries []grovecorev1alpha1.PodGangEntry, currentHash string) int {
-	return lo.CountBy(entries, func(entry grovecorev1alpha1.PodGangEntry) bool {
-		return entry.Role == grovecorev1alpha1.PodGangEntryRoleScaleOut &&
-			entry.PodCliqueSetGenerationHash == currentHash
-	})
+func currentGenerationScaleOutEntry(entries []grovecorev1alpha1.PodGangEntry, currentHash string) (*grovecorev1alpha1.PodGangEntry, error) {
+	var found *grovecorev1alpha1.PodGangEntry
+	count := 0
+	for i := range entries {
+		entry := &entries[i]
+		if entry.Role == grovecorev1alpha1.PodGangEntryRoleScaleOut && entry.PodCliqueSetGenerationHash == currentHash {
+			found = entry
+			count++
+		}
+	}
+	if count > 1 {
+		return nil, fmt.Errorf("current generation %q has %d ScaleOut entries", currentHash, count)
+	}
+	return found, nil
 }
 
 // refreshStandalonePodCliqueCounts reconciles live standalone PodClique counts across current-
@@ -307,6 +318,7 @@ func currentGenerationAnchorsByIndexDesc(entries []grovecorev1alpha1.PodGangEntr
 // entries against its live Spec.Replicas. A wake restores the minimum replicas into the highest
 // current-generation anchor; subsequent scale-out preserves already-placed replicas.
 func reconcilePCSGReplicaIndices(entries []grovecorev1alpha1.PodGangEntry,
+	scaleOut *grovecorev1alpha1.PodGangEntry,
 	pcs *grovecorev1alpha1.PodCliqueSet,
 	pcsgs []grovecorev1alpha1.PodCliqueScalingGroup,
 	pcsReplicaIndex int) error {
@@ -340,7 +352,7 @@ func reconcilePCSGReplicaIndices(entries []grovecorev1alpha1.PodGangEntry,
 			if firstScaleOutIndex == pcsg.Spec.Replicas {
 				continue
 			}
-			if err := appendScaleOutReplicaIndices(entries, currentHash, pcsgConfigName,
+			if err := appendScaleOutReplicaIndices(scaleOut, currentHash, pcsgConfigName,
 				lo.RangeFrom(firstScaleOutIndex, int(pcsg.Spec.Replicas-firstScaleOutIndex))); err != nil {
 				return err
 			}
@@ -353,26 +365,21 @@ func reconcilePCSGReplicaIndices(entries []grovecorev1alpha1.PodGangEntry,
 
 // reconcileScaleOutEntryIdentity gives an idle slot a fresh scheduling identity. Bootstrap and
 // reconstruction retain their allocated/adopted epochs, and active entries keep their dependencies.
-func reconcileScaleOutEntryIdentity(entries, previous []grovecorev1alpha1.PodGangEntry, currentHash string, epochs *epochAllocator) {
-	for i := range entries {
-		entry := &entries[i]
-		if entry.Role != grovecorev1alpha1.PodGangEntryRoleScaleOut ||
-			entry.PodCliqueSetGenerationHash != currentHash || componentutils.IsPodGangEntryEmpty(*entry) {
-			continue
-		}
-		for _, old := range previous {
-			if old.Role != entry.Role || old.Epoch != entry.Epoch {
-				continue
-			}
-			if !componentutils.IsPodGangEntryEmpty(old) {
-				return
-			}
-			entry.Epoch = epochs.allocate()
-			break
-		}
-		entry.DependsOn = materializedAnchorDependency(entries, currentHash)
+func reconcileScaleOutEntryIdentity(scaleOut *grovecorev1alpha1.PodGangEntry, entries, previous []grovecorev1alpha1.PodGangEntry, currentHash string, epochs *epochAllocator) {
+	if scaleOut == nil || componentutils.IsPodGangEntryEmpty(*scaleOut) {
 		return
 	}
+	for _, old := range previous {
+		if old.Role != scaleOut.Role || old.Epoch != scaleOut.Epoch {
+			continue
+		}
+		if !componentutils.IsPodGangEntryEmpty(old) {
+			return
+		}
+		scaleOut.Epoch = epochs.allocate()
+		break
+	}
+	scaleOut.DependsOn = materializedAnchorDependency(entries, currentHash)
 }
 
 func materializedAnchorDependency(entries []grovecorev1alpha1.PodGangEntry, currentHash string) []string {
@@ -395,21 +402,17 @@ func countPCSGReplicaIndices(entries []grovecorev1alpha1.PodGangEntry, pcsgConfi
 }
 
 // appendScaleOutReplicaIndices appends the given PodCliqueScalingGroup replica indices to the
-// ScaleOut entry. The ScaleOut entry is pre-created by ensureScaleOutEntry, so it is expected to
-// exist here.
-func appendScaleOutReplicaIndices(entries []grovecorev1alpha1.PodGangEntry, currentHash, pcsgConfigName string, indices []int32) error {
-	for i := range entries {
-		if entries[i].Role == grovecorev1alpha1.PodGangEntryRoleScaleOut &&
-			entries[i].PodCliqueSetGenerationHash == currentHash {
-			if entries[i].PCSGReplicaIndices == nil {
-				entries[i].PCSGReplicaIndices = make(map[string][]int32)
-			}
-			entries[i].PCSGReplicaIndices[pcsgConfigName] = append(entries[i].PCSGReplicaIndices[pcsgConfigName], indices...)
-			slices.Sort(entries[i].PCSGReplicaIndices[pcsgConfigName])
-			return nil
-		}
+// current-generation ScaleOut entry selected before membership reconciliation.
+func appendScaleOutReplicaIndices(scaleOut *grovecorev1alpha1.PodGangEntry, currentHash, pcsgConfigName string, indices []int32) error {
+	if scaleOut == nil {
+		return fmt.Errorf("current generation %q has no ScaleOut entry", currentHash)
 	}
-	return fmt.Errorf("current generation %q has no ScaleOut entry", currentHash)
+	if scaleOut.PCSGReplicaIndices == nil {
+		scaleOut.PCSGReplicaIndices = make(map[string][]int32)
+	}
+	scaleOut.PCSGReplicaIndices[pcsgConfigName] = append(scaleOut.PCSGReplicaIndices[pcsgConfigName], indices...)
+	slices.Sort(scaleOut.PCSGReplicaIndices[pcsgConfigName])
+	return nil
 }
 
 // drainReplicaIndicesForScaleIn removes count of the given PodCliqueScalingGroup's replica indices,
@@ -476,20 +479,9 @@ func removeEmptyEntries(entries []grovecorev1alpha1.PodGangEntry, currentGenerat
 	})
 }
 
-// ensureScaleOutEntry appends an empty ScaleOut entry to entries when the PodCliqueSet has any
-// PodCliqueScalingGroup and no current-generation ScaleOut entry is present. The entry depends on the
-// highest materialized anchor of the current generation, if any. When a current-generation ScaleOut
-// entry already exists, entries are returned unchanged.
-func ensureScaleOutEntry(entries []grovecorev1alpha1.PodGangEntry, pcs *grovecorev1alpha1.PodCliqueSet, scaleOutEpoch string) []grovecorev1alpha1.PodGangEntry {
-	if len(pcs.Spec.Template.PodCliqueScalingGroupConfigs) == 0 {
-		return entries
-	}
+// appendScaleOutEntry creates an empty slot depending on the highest materialized current anchor.
+func appendScaleOutEntry(entries []grovecorev1alpha1.PodGangEntry, pcs *grovecorev1alpha1.PodCliqueSet, scaleOutEpoch string) []grovecorev1alpha1.PodGangEntry {
 	currentHash := *pcs.Status.CurrentGenerationHash
-	for _, entry := range entries {
-		if entry.Role == grovecorev1alpha1.PodGangEntryRoleScaleOut && entry.PodCliqueSetGenerationHash == currentHash {
-			return entries
-		}
-	}
 	scaleOut := newPodGangEntry(scaleOutEpoch, currentHash, materializedAnchorDependency(entries, currentHash))
 	scaleOut.Role = grovecorev1alpha1.PodGangEntryRoleScaleOut
 	return append(entries, scaleOut)

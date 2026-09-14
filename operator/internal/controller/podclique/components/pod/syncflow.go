@@ -387,27 +387,14 @@ func (r _resource) checkAndRemovePodSchedulingGates(ctx context.Context, logger 
 		return skippedScheduleGatedPods, nil
 	}
 
-	podGangByName, err := r.fetchPodGangsForGatedPods(ctx, gatedPods, ss.pclq.Namespace)
+	scheduling, err := r.prepareSchedulingGateSnapshot(ctx, ss, gatedPods)
 	if err != nil {
 		return nil, err
-	}
-	dependencySatisfiedByEpoch, err := r.resolveDependencySatisfiedByEpoch(ctx, ss)
-	if err != nil {
-		return nil, err
-	}
-	backendSynced, err := r.resolveBackendSynced(ctx, podGangByName)
-	if err != nil {
-		return nil, err
-	}
-	quorumScheduled, err := r.isPCSGMinimumScheduled(ctx, ss)
-	if err != nil {
-		return nil, groveerr.WrapError(err, errCodeGetPodGang, component.OperationSync, "failed to resolve current PCSG scheduling quorum")
 	}
 
 	tasks := make([]utils.Task, 0, len(gatedPods))
 	for i, pod := range gatedPods {
-		if !quorumScheduled || !backendSynced[pod.Labels[apicommon.LabelPodGang]] ||
-			!canRemoveSchedulingGate(logger, pod, ss.pclq.Name, podGangByName, dependencySatisfiedByEpoch) {
+		if !canRemoveSchedulingGate(logger, pod, ss.pclq.Name, scheduling) {
 			skippedScheduleGatedPods = append(skippedScheduleGatedPods, pod.Name)
 			continue
 		}
@@ -512,11 +499,10 @@ func (r _resource) resolveDependencySatisfiedByEpoch(ctx context.Context, ss *sy
 }
 
 // canRemoveSchedulingGate reports whether pod's Grove PodGang gate can be lifted. Its PodGang must
-// exist, record the pod in its PodReferences, and the dependencies of its PodGang's epoch must be
-// satisfied. It reads only prefetched maps and makes no API calls. A PodGang epoch absent from
-// dependencySatisfiedByEpoch (a transient PodGangMap and PodGang divergence) resolves to false, so
-// the pod is skipped and the reconcile requeues.
-func canRemoveSchedulingGate(logger logr.Logger, pod *corev1.Pod, pclqName string, podGangByName map[string]*groveschedulerv1alpha1.PodGang, dependencySatisfiedByEpoch map[string]bool) bool {
+// exist, record the pod in its PodReferences, and have its native policy synchronized. Both the
+// historical epoch dependencies and the live PCSG minimum must be satisfied. Missing observations
+// keep the gate in place until reconciliation catches up. No API calls are made here.
+func canRemoveSchedulingGate(logger logr.Logger, pod *corev1.Pod, pclqName string, ss *schedulingGateSnapshot) bool {
 	podObjectKey := client.ObjectKeyFromObject(pod)
 	podGangName, ok := pod.Labels[apicommon.LabelPodGang]
 	if !ok {
@@ -524,7 +510,10 @@ func canRemoveSchedulingGate(logger logr.Logger, pod *corev1.Pod, pclqName strin
 		return false
 	}
 
-	podGang := podGangByName[podGangName]
+	if !ss.pcsgMinimumScheduled || !ss.backendSyncedByPodGang[podGangName] {
+		return false
+	}
+	podGang := ss.podGangByName[podGangName]
 	if podGang == nil {
 		logger.Info("PodGang not found yet, skipping gate removal", "podObjectKey", podObjectKey, "podGangName", podGangName)
 		return false
@@ -536,7 +525,7 @@ func canRemoveSchedulingGate(logger logr.Logger, pod *corev1.Pod, pclqName strin
 		logger.Info("Pod not yet recorded in PodGang PodReferences, skipping gate removal", "podObjectKey", podObjectKey, "podGangName", podGangName)
 		return false
 	}
-	if !dependencySatisfiedByEpoch[podGang.Labels[apicommon.LabelEpoch]] {
+	if !ss.dependencySatisfiedByEpoch[podGang.Labels[apicommon.LabelEpoch]] {
 		logger.Info("Pod's PodGang epoch dependencies not yet scheduled, skipping gate removal", "podObjectKey", podObjectKey, "podGangName", podGangName)
 		return false
 	}

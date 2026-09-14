@@ -35,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -111,8 +112,7 @@ func TestIsPodInPodReferences(t *testing.T) {
 	}
 }
 
-// TestCanRemoveSchedulingGate verifies the gate is liftable only when the pod's PodGang exists,
-// records the pod in its PodReferences, and that PodGang's epoch dependencies are satisfied.
+// TestCanRemoveSchedulingGate verifies every prerequisite independently keeps the gate closed.
 func TestCanRemoveSchedulingGate(t *testing.T) {
 	podGangName := podGangNameForEpoch(testAnchor0Epoch)
 	pod := gatedPod("pod-a", podGangName)
@@ -139,8 +139,38 @@ func TestCanRemoveSchedulingGate(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			actual := canRemoveSchedulingGate(logr.Discard(), pod, testCliqueName, tc.podGangByName, tc.dependencySatisfiedByEpoch)
+			actual := canRemoveSchedulingGate(logr.Discard(), pod, testCliqueName, &schedulingGateSnapshot{
+				podGangByName:              tc.podGangByName,
+				dependencySatisfiedByEpoch: tc.dependencySatisfiedByEpoch,
+				backendSyncedByPodGang:     map[string]bool{podGangName: true},
+				pcsgMinimumScheduled:       true,
+			})
 			assert.Equal(t, tc.expected, actual)
+		})
+	}
+
+	for _, tc := range []struct {
+		name                 string
+		backendSynced        map[string]bool
+		pcsgMinimumScheduled bool
+		terminating          bool
+	}{
+		{"native policy is stale", map[string]bool{podGangName: false}, true, false},
+		{"native policy observation is missing", nil, true, false},
+		{"live PCSG minimum is not scheduled", map[string]bool{podGangName: true}, false, false},
+		{"PodGang is terminating", map[string]bool{podGangName: true}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gang := podGangWithPod.DeepCopy()
+			if tc.terminating {
+				gang.DeletionTimestamp = ptr.To(metav1.Now())
+			}
+			assert.False(t, canRemoveSchedulingGate(logr.Discard(), pod, testCliqueName, &schedulingGateSnapshot{
+				podGangByName:              map[string]*groveschedulerv1alpha1.PodGang{podGangName: gang},
+				dependencySatisfiedByEpoch: map[string]bool{testAnchor0Epoch: true},
+				backendSyncedByPodGang:     tc.backendSynced,
+				pcsgMinimumScheduled:       tc.pcsgMinimumScheduled,
+			}))
 		})
 	}
 }
