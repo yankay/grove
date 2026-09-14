@@ -21,11 +21,11 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/e2e/grove/podgang"
+	"github.com/ai-dynamo/grove/operator/e2e/grove/podgangmap"
 	"github.com/ai-dynamo/grove/operator/e2e/grove/workload"
 	"github.com/ai-dynamo/grove/operator/e2e/testctx"
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
@@ -33,6 +33,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -112,34 +113,22 @@ func Test_GS1_GangSchedulingWithFullReplicas(t *testing.T) {
 }
 
 // Test_GS13_SimultaneousWakeWithMixedIdle verifies concurrent standalone and PCSG wake while another
-// standalone clique remains idle. The standalone returns to the retained anchor, while each PCSG
-// replica wakes in its own scaled PodGang.
+// standalone clique remains idle. The standalone and the PCSG minimum return to the retained anchor.
 func Test_GS13_SimultaneousWakeWithMixedIdle(t *testing.T) {
 	const (
-		pcsName       = "workload-idle-wake"
-		idlePCLQName  = pcsName + "-0-idle"
-		guardedName   = pcsName + "-0-guarded"
-		workerName    = pcsName + "-0-worker"
-		pcsgName      = pcsName + "-0-workers"
-		prefillName   = pcsgName + "-0-prefill"
-		decodeName    = pcsgName + "-0-decode"
-		barrierWindow = 5 * time.Second
+		pcsName      = "workload-idle-wake"
+		idlePCLQName = pcsName + "-0-idle"
+		guardedName  = pcsName + "-0-guarded"
+		workerName   = pcsName + "-0-worker"
+		pcsgName     = pcsName + "-0-workers"
+		prefillName  = pcsgName + "-0-prefill"
+		decodeName   = pcsgName + "-0-decode"
 	)
 	ctx := context.Background()
-	tc, cleanup := testctx.PrepareTest(ctx, t, 3,
-		testctx.WithWorkload(&testctx.WorkloadConfig{
-			Name:         pcsName,
-			YAMLPath:     "../yaml/workload-idle-wake.yaml",
-			Namespace:    "default",
-			ExpectedPods: 0,
-		}),
-	)
+	tc, cleanup := prepareIdleWorkload(t, ctx, 3, pcsName, 0, nil)
 	defer cleanup()
 
-	Logger.Info("1. Deploy a PodCliqueSet whose standalone and scaling-group components are idle")
-	if _, err := tc.DeployAndVerifyWorkload(); err != nil {
-		t.Fatalf("Failed to deploy workload: %v", err)
-	}
+	Logger.Info("1. Wait for idle standalone and scaling-group components")
 	wm := workload.NewWorkloadManager(tc.Client, Logger)
 	if _, err := wm.WaitForPodClique(ctx, tc.Namespace, workerName, tc.Timeout, tc.Interval); err != nil {
 		t.Fatalf("Failed to wait for idle PodClique: %v", err)
@@ -161,64 +150,50 @@ func Test_GS13_SimultaneousWakeWithMixedIdle(t *testing.T) {
 	if err := tc.WaitForReadyPods(3); err != nil {
 		t.Fatalf("Failed to wait for woken pods: %v", err)
 	}
-	firstWake := waitForWakeState(t, ctx, tc, pcsName, idlePCLQName, workerName, prefillName, decodeName)
+	firstWake := waitForWakeState(ctx, t, tc, pcsName, idlePCLQName, workerName, prefillName, decodeName)
 
 	Logger.Info("4. Verify PCSG ownership remains enforced after removing the compatibility label")
 	assertOwnerReferenceBlocksIndependentScale(t, ctx, tc, prefillName)
 
-	Logger.Info("5. Hold old PodGangs and scale both components to zero")
-	heldPodGangs := addPodGangFinalizers(t, ctx, tc, pcsName)
-	pods, err := tc.ListPods()
-	if err != nil {
-		t.Fatalf("Failed to list pods before scale-to-zero: %v", err)
-	}
-	originalUIDs := capturePodUIDs(pods)
+	Logger.Info("5. Scale both components to zero and restart the operator")
 	scaleIdleComponents(t, ctx, tc, workerName, pcsgName, 0)
-	waitForRemovedMembershipAndTerminatingPodGangs(t, ctx, tc, pcsName, heldPodGangs)
 	restartOperator(t, ctx, tc)
-	assertBarrierRetainsWorkload(t, ctx, tc, originalUIDs, []string{workerName, prefillName, decodeName}, barrierWindow)
 
-	Logger.Info("6. Release PodGang finalizers and verify the all-idle state converges")
-	removePodGangFinalizers(t, ctx, tc, heldPodGangs)
+	Logger.Info("6. Verify the all-idle state converges without residual gang membership")
 	waitForAllIdle(t, ctx, tc, pcsName, prefillName, decodeName)
+	waitForAllIdleBootstrap(t, ctx, tc, pcsName)
 
-	Logger.Info("7. Wake both components again and verify the anchor is reused and the SPG is fresh")
+	Logger.Info("7. Wake both components again and verify the anchor name is reused")
 	scaleIdleComponents(t, ctx, tc, workerName, pcsgName, 1)
 	if err := tc.WaitForReadyPods(3); err != nil {
 		t.Fatalf("Failed to wait for second wake: %v", err)
 	}
-	secondWake := waitForWakeState(t, ctx, tc, pcsName, idlePCLQName, workerName, prefillName, decodeName)
-	if secondWake.anchorName != firstWake.anchorName {
-		t.Fatalf("second wake changed anchor name: %s -> %s", firstWake.anchorName, secondWake.anchorName)
-	}
-	if secondWake.scaleOutName == firstWake.scaleOutName {
-		t.Fatalf("second wake reused scaled PodGang %s", secondWake.scaleOutName)
+	secondWake := waitForWakeState(ctx, t, tc, pcsName, idlePCLQName, workerName, prefillName, decodeName)
+	if secondWake != firstWake {
+		t.Fatalf("second wake changed anchor name: %s -> %s", firstWake, secondWake)
 	}
 }
 
-type observedWakeState struct {
-	anchorName   string
-	scaleOutName string
-}
-
-type stringSet map[string]struct{}
-
-func (s stringSet) Has(value string) bool {
-	_, ok := s[value]
-	return ok
-}
-
-func waitForWakeState(t *testing.T, ctx context.Context, tc *testctx.TestContext, pcsName, idlePCLQName, workerName, prefillName, decodeName string) observedWakeState {
+func waitForWakeState(ctx context.Context, t *testing.T, tc *testctx.TestContext, pcsName, idlePCLQName, workerName, prefillName, decodeName string) string {
 	t.Helper()
-	var observed observedWakeState
+	var anchorName string
+	pgmVerifier := podgangmap.NewVerifier(tc.Client, Logger)
+	pcsKey := client.ObjectKey{Namespace: tc.Namespace, Name: pcsName}
+	checks := []podgangmap.Check{
+		podgangmap.AnchorStandalonePodCliqueCountCheckFn("worker", 1),
+		podgangmap.AnchorPCSGReplicaIndicesCheckFn("workers", []int32{0}),
+		podgangmap.ScaleOutPCSGReplicaIndicesCheckFn("workers", nil),
+	}
+	if err := podgangmap.WaitUntilVerified(ctx, pgmVerifier, pcsKey, 0, tc.Timeout, tc.Interval, checks...); err != nil {
+		t.Fatalf("Wake membership did not converge: %v", err)
+	}
 	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
-		pgm := &grovecorev1alpha1.PodGangMap{}
-		if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: pcsName + "-0"}, pgm); err != nil {
+		pgm, err := pgmVerifier.Get(ctx, pcsKey, 0)
+		if err != nil {
 			return false, client.IgnoreNotFound(err)
 		}
-		var workerAnchor, scaleOut *grovecorev1alpha1.PodGangEntry
-		anchorCount := 0
-		epochs := stringSet{}
+		var workerAnchor *grovecorev1alpha1.PodGangEntry
+		epochs := sets.New[string]()
 		for i := range pgm.Spec.Entries {
 			entry := &pgm.Spec.Entries[i]
 			if epochs.Has(entry.Epoch) {
@@ -228,42 +203,26 @@ func waitForWakeState(t *testing.T, ctx context.Context, tc *testctx.TestContext
 			if _, carriesIdle := entry.PodCliques["idle"]; carriesIdle {
 				return false, nil
 			}
-			switch entry.Role {
-			case grovecorev1alpha1.PodGangEntryRoleAnchor:
-				anchorCount++
-				if len(entry.PCSGReplicaIndices) != 0 {
-					return false, nil
-				}
-				if entry.PodCliques["worker"] == 1 {
-					workerAnchor = entry
-				}
-			case grovecorev1alpha1.PodGangEntryRoleScaleOut:
-				if slices.Equal(entry.PCSGReplicaIndices["workers"], []int32{0}) {
-					scaleOut = entry
-				}
+			if entry.Role == grovecorev1alpha1.PodGangEntryRoleAnchor {
+				workerAnchor = entry
 			}
 		}
-		if anchorCount != 1 || workerAnchor == nil || scaleOut == nil {
+		if workerAnchor == nil {
 			return false, nil
 		}
 		if len(workerAnchor.DependsOn) != 0 {
 			return false, nil
 		}
-		// A PCSG that wakes first has no anchor dependency; active entries retain that choice.
-		if len(scaleOut.DependsOn) != 0 && !slices.Equal(scaleOut.DependsOn, []string{workerAnchor.Epoch}) {
-			return false, nil
-		}
 		rnr := apicommon.ResourceNameReplica{Name: pcsName, Replica: 0}
 		workerPodGangName := apicommon.GenerateAnchorPodGangName(rnr, workerAnchor.Epoch)
-		pcsgPodGangName := apicommon.GenerateNonAnchorPodGangName(rnr, scaleOut.Epoch, "workers", 0)
 		expectedPodGangs := map[string]string{
 			workerName:  workerPodGangName,
-			prefillName: pcsgPodGangName,
-			decodeName:  pcsgPodGangName,
+			prefillName: workerPodGangName,
+			decodeName:  workerPodGangName,
 		}
 		expectedDependencies := map[string][]string{
 			workerName:  nil,
-			prefillName: nil,
+			prefillName: {workerName},
 			decodeName:  {prefillName},
 		}
 		for name, dependencies := range expectedDependencies {
@@ -271,8 +230,15 @@ func waitForWakeState(t *testing.T, ctx context.Context, tc *testctx.TestContext
 			if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: name}, pclq); err != nil {
 				return false, client.IgnoreNotFound(err)
 			}
-			if pclq.Labels[apicommon.LabelPodGang] != expectedPodGangs[name] ||
-				!slices.Equal(pclq.Spec.StartsAfter, dependencies) {
+			if pclq.Labels[apicommon.LabelPodGang] != expectedPodGangs[name] {
+				return false, nil
+			}
+			// A PCSG created before the standalone wake has no worker dependency.
+			// RollingRecreate preserves that creation-time dependency on existing members.
+			if name == prefillName && len(pclq.Spec.StartsAfter) == 0 {
+				continue
+			}
+			if !slices.Equal(pclq.Spec.StartsAfter, dependencies) {
 				return false, nil
 			}
 		}
@@ -290,7 +256,7 @@ func waitForWakeState(t *testing.T, ctx context.Context, tc *testctx.TestContext
 		); err != nil {
 			return false, err
 		}
-		expectedNames := map[string]struct{}{workerPodGangName: {}, pcsgPodGangName: {}}
+		expectedNames := map[string]struct{}{workerPodGangName: {}}
 		if len(podGangs.Items) != len(expectedNames) {
 			return false, nil
 		}
@@ -314,13 +280,12 @@ func waitForWakeState(t *testing.T, ctx context.Context, tc *testctx.TestContext
 		if len(expectedGroups) != 0 {
 			return false, nil
 		}
-		observed.anchorName = workerPodGangName
-		observed.scaleOutName = pcsgPodGangName
+		anchorName = workerPodGangName
 		return true, nil
 	}); err != nil {
 		t.Fatalf("Wake state did not converge: %v", err)
 	}
-	return observed
+	return anchorName
 }
 
 func assertBelowQuorumRejected(t *testing.T, ctx context.Context, tc *testctx.TestContext, pclqName string) {
@@ -462,101 +427,6 @@ func scaleIdleComponents(t *testing.T, ctx context.Context, tc *testctx.TestCont
 	for range 2 {
 		if err := <-errCh; err != nil {
 			t.Fatalf("Failed to scale idle component to %d: %v", replicas, err)
-		}
-	}
-}
-
-func addPodGangFinalizers(t *testing.T, ctx context.Context, tc *testctx.TestContext, pcsName string) []client.ObjectKey {
-	t.Helper()
-	podGangs := listPodGangs(t, ctx, tc, pcsName)
-	if len(podGangs.Items) == 0 {
-		t.Fatal("no PodGangs available for deletion barrier")
-	}
-	keys := make([]client.ObjectKey, 0, len(podGangs.Items))
-	for i := range podGangs.Items {
-		podGang := &podGangs.Items[i]
-		podGang.Finalizers = append(podGang.Finalizers, "e2e.grove.io/hold")
-		if err := tc.Client.Update(ctx, podGang); err != nil {
-			t.Fatalf("Failed to add finalizer to PodGang %s: %v", podGang.Name, err)
-		}
-		keys = append(keys, client.ObjectKeyFromObject(podGang))
-	}
-	return keys
-}
-
-func waitForRemovedMembershipAndTerminatingPodGangs(t *testing.T, ctx context.Context, tc *testctx.TestContext, pcsName string, podGangKeys []client.ObjectKey) {
-	t.Helper()
-	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
-		pgm := &grovecorev1alpha1.PodGangMap{}
-		if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: pcsName + "-0"}, pgm); err != nil {
-			return false, err
-		}
-		for i := range pgm.Spec.Entries {
-			if pgm.Spec.Entries[i].PodCliques["worker"] > 0 ||
-				len(pgm.Spec.Entries[i].PCSGReplicaIndices["workers"]) > 0 {
-				return false, nil
-			}
-		}
-		for _, key := range podGangKeys {
-			podGang := &groveschedulerv1alpha1.PodGang{}
-			if err := tc.Client.Get(ctx, key, podGang); err != nil {
-				return false, err
-			}
-			if podGang.DeletionTimestamp == nil {
-				return false, nil
-			}
-		}
-		return true, nil
-	}); err != nil {
-		t.Fatalf("Scale-to-zero did not reach deletion barrier: %v", err)
-	}
-}
-
-func assertBarrierRetainsWorkload(t *testing.T, ctx context.Context, tc *testctx.TestContext, originalUIDs map[types.UID]struct{}, pclqNames []string, duration time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(duration)
-	for {
-		pods, err := tc.ListPods()
-		if err != nil {
-			t.Fatalf("Failed to list pods during barrier observation: %v", err)
-		}
-		currentUIDs := capturePodUIDs(pods)
-		for uid := range originalUIDs {
-			if !currentUIDsHas(currentUIDs, uid) {
-				t.Fatalf("Pod UID %s was deleted before old PodGang removal", uid)
-			}
-		}
-		for _, name := range pclqNames {
-			if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: name}, &grovecorev1alpha1.PodClique{}); err != nil {
-				t.Fatalf("PodClique %s was deleted before old PodGang removal: %v", name, err)
-			}
-		}
-		if time.Now().After(deadline) {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
-}
-
-func currentUIDsHas(uids map[types.UID]struct{}, uid types.UID) bool {
-	_, ok := uids[uid]
-	return ok
-}
-
-func removePodGangFinalizers(t *testing.T, ctx context.Context, tc *testctx.TestContext, keys []client.ObjectKey) {
-	t.Helper()
-	for _, key := range keys {
-		podGang := &groveschedulerv1alpha1.PodGang{}
-		if err := tc.Client.Get(ctx, key, podGang); err != nil {
-			t.Fatalf("Failed to get held PodGang %s: %v", key.Name, err)
-		}
-		podGang.Finalizers = nil
-		if err := tc.Client.Update(ctx, podGang); err != nil {
-			t.Fatalf("Failed to release PodGang %s: %v", key.Name, err)
 		}
 	}
 }

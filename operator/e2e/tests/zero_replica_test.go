@@ -29,7 +29,10 @@ import (
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	apiconstants "github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
+	"github.com/ai-dynamo/grove/operator/e2e/grove/podgang"
+	"github.com/ai-dynamo/grove/operator/e2e/grove/podgangmap"
 	"github.com/ai-dynamo/grove/operator/e2e/grove/podgroup"
+	"github.com/ai-dynamo/grove/operator/e2e/grove/workload"
 	"github.com/ai-dynamo/grove/operator/e2e/setup"
 	"github.com/ai-dynamo/grove/operator/e2e/testctx"
 	internalconstants "github.com/ai-dynamo/grove/operator/internal/constants"
@@ -41,6 +44,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
@@ -63,7 +67,10 @@ func Test_ZR1_AllIdleBootstrapAndStaleBreach(t *testing.T) {
 	workerName := pcsName + "-0-worker"
 	pcsgName := pcsName + "-0-workers"
 	worker := waitForPCLQ(t, ctx, tc, workerName)
-	pcsg := waitForPCSG(t, ctx, tc, pcsgName)
+	pcsg, err := workload.NewWorkloadManager(tc.Client, Logger).WaitForPCSG(ctx, tc.Namespace, pcsgName, tc.Timeout, tc.Interval)
+	if err != nil {
+		t.Fatalf("Failed to wait for idle PodCliqueScalingGroup: %v", err)
+	}
 	waitForAllIdleBootstrap(t, ctx, tc, pcsName)
 
 	beforePCLQEvents := countEvents(t, ctx, tc, worker.UID, internalconstants.ReasonAllScheduledReplicasLost)
@@ -111,7 +118,7 @@ func Test_ZR2_StandaloneLifecycle(t *testing.T) {
 	waitForStandaloneMembership(t, ctx, tc, pcsName, "worker", 3)
 	initialPods := podsForClique(t, tc, workerName)
 	initialLocations := podUIDLocations(initialPods)
-	initialPodGangs := podGangNameSet(t, ctx, tc, pcsName)
+	initialPodGangs := podGangNameSet(ctx, t, tc, pcsName)
 	initialEpoch := maxPGMEpoch(t, ctx, tc, pcsName)
 
 	updateScale(t, ctx, tc, &grovecorev1alpha1.PodClique{
@@ -135,7 +142,7 @@ func Test_ZR2_StandaloneLifecycle(t *testing.T) {
 	if wakeEpoch := maxPGMEpoch(t, ctx, tc, pcsName); wakeEpoch != initialEpoch {
 		t.Fatalf("standalone wake changed anchor epoch: %d -> %d", initialEpoch, wakeEpoch)
 	}
-	if names := podGangNameSet(t, ctx, tc, pcsName); !reflect.DeepEqual(initialPodGangs, names) {
+	if names := podGangNameSet(ctx, t, tc, pcsName); !initialPodGangs.Equal(names) {
 		t.Fatalf("standalone wake changed anchor names: %v -> %v", initialPodGangs, names)
 	}
 	for _, pod := range podsForClique(t, tc, workerName) {
@@ -171,7 +178,7 @@ func Test_ZR3_PodCliqueScalingGroupLifecycle(t *testing.T) {
 	waitForPCSGMembership(t, ctx, tc, pcsName, "workers", []int32{0, 1, 2})
 	retainedPCLQUIDs := pclqUIDsForPCSGIndex(t, ctx, tc, pcsgName, "0")
 	retainedPodLocations := podUIDLocations(podsForPCSGIndex(t, tc, "0"))
-	initialPodGangs := podGangNameSet(t, ctx, tc, pcsName)
+	initialPodGangs := podGangNameSet(ctx, t, tc, pcsName)
 
 	updateScale(t, ctx, tc, &grovecorev1alpha1.PodCliqueScalingGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: pcsgName, Namespace: tc.Namespace},
@@ -212,7 +219,7 @@ func Test_ZR3_PodCliqueScalingGroupLifecycle(t *testing.T) {
 	if scaleOutEpoch == "" || anchorEpoch == "" {
 		t.Fatal("PCSG wake requires both an anchor and a ScaleOut entry")
 	}
-	wokenNames := podGangNameSet(t, ctx, tc, pcsName)
+	wokenNames := podGangNameSet(ctx, t, tc, pcsName)
 	if len(wokenNames) != 2 {
 		t.Fatalf("PCSG wake created %d PodGangs, want one anchor and one scaled gang", len(wokenNames))
 	}
@@ -761,22 +768,6 @@ func setStaleBreachConditions(t *testing.T, ctx context.Context, tc *testctx.Tes
 	}
 }
 
-func waitForPCSG(t *testing.T, ctx context.Context, tc *testctx.TestContext, name string) *grovecorev1alpha1.PodCliqueScalingGroup {
-	t.Helper()
-	var result *grovecorev1alpha1.PodCliqueScalingGroup
-	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
-		pcsg := &grovecorev1alpha1.PodCliqueScalingGroup{}
-		if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: name}, pcsg); err != nil {
-			return false, client.IgnoreNotFound(err)
-		}
-		result = pcsg
-		return true, nil
-	}); err != nil {
-		t.Fatalf("PodCliqueScalingGroup %s did not appear: %v", name, err)
-	}
-	return result
-}
-
 func waitForPCSGConditionReason(t *testing.T, ctx context.Context, tc *testctx.TestContext, name, reason string) {
 	t.Helper()
 	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
@@ -892,26 +883,19 @@ func waitForStandaloneMembership(t *testing.T, ctx context.Context, tc *testctx.
 
 func waitForPCSGMembership(t *testing.T, ctx context.Context, tc *testctx.TestContext, pcsName, pcsgName string, want []int32) {
 	t.Helper()
-	slices.Sort(want)
-	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
-		pgm := getPGM(t, ctx, tc, pcsName, 0)
-		var got []int32
-		for i := range pgm.Spec.Entries {
-			got = append(got, pgm.Spec.Entries[i].PCSGReplicaIndices[pcsgName]...)
-		}
-		slices.Sort(got)
-		return slices.Equal(got, want), nil
-	}); err != nil {
+	if err := podgangmap.WaitUntilVerified(ctx, podgangmap.NewVerifier(tc.Client, Logger),
+		client.ObjectKey{Namespace: tc.Namespace, Name: pcsName}, 0, tc.Timeout, tc.Interval,
+		podgangmap.PCSGReplicaIndicesCheckFn(pcsgName, want)); err != nil {
 		t.Fatalf("PCSG membership did not converge to %v: %v", want, err)
 	}
 }
 
 func getPGM(t *testing.T, ctx context.Context, tc *testctx.TestContext, pcsName string, replica int) *grovecorev1alpha1.PodGangMap {
 	t.Helper()
-	pgm := &grovecorev1alpha1.PodGangMap{}
-	name := apicommon.GeneratePodGangMapName(apicommon.ResourceNameReplica{Name: pcsName, Replica: replica})
-	if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: name}, pgm); err != nil {
-		t.Fatalf("Failed to get PodGangMap %s: %v", name, err)
+	pgm, err := podgangmap.NewVerifier(tc.Client, Logger).Get(ctx,
+		client.ObjectKey{Namespace: tc.Namespace, Name: pcsName}, replica)
+	if err != nil {
+		t.Fatalf("Failed to get PodGangMap for %s replica %d: %v", pcsName, replica, err)
 	}
 	return pgm
 }
@@ -929,9 +913,9 @@ func maxPGMEpoch(t *testing.T, ctx context.Context, tc *testctx.TestContext, pcs
 	return maxEpoch
 }
 
-func podGangNameSet(t *testing.T, ctx context.Context, tc *testctx.TestContext, pcsName string) stringSet {
+func podGangNameSet(ctx context.Context, t *testing.T, tc *testctx.TestContext, pcsName string) sets.Set[string] {
 	t.Helper()
-	result := stringSet{}
+	result := sets.New[string]()
 	for _, podGang := range listPodGangs(t, ctx, tc, pcsName).Items {
 		result[podGang.Name] = struct{}{}
 	}
@@ -1109,13 +1093,10 @@ func podGangUIDsForPCSReplica(t *testing.T, ctx context.Context, tc *testctx.Tes
 
 func assertPodGangUIDs(t *testing.T, ctx context.Context, tc *testctx.TestContext, want map[string]types.UID) {
 	t.Helper()
+	verifier := podgang.NewVerifier(tc.Client, Logger)
 	for name, uid := range want {
-		podGang := &groveschedulerv1alpha1.PodGang{}
-		if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: name}, podGang); err != nil {
-			t.Fatalf("Failed to get retained PodGang %s: %v", name, err)
-		}
-		if podGang.UID != uid {
-			t.Fatalf("PodGang %s UID changed: %s -> %s", name, uid, podGang.UID)
+		if err := verifier.VerifyByName(ctx, tc.Namespace, name, podgang.SameUIDCheckFn(uid)); err != nil {
+			t.Fatalf("Retained PodGang changed: %v", err)
 		}
 	}
 }
