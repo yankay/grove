@@ -44,6 +44,31 @@ The test suite will:
 3. Run all e2e testing suites
 4. Clean up the cluster
 
+### Hibernation Backend Tests
+
+The `Test_ZR*` tests also run against an existing cluster with KAI or Volcano.
+Use a dedicated cluster: these tests delete Grove workloads, cordon worker nodes,
+and restart the Grove operator.
+
+Install Grove in `grove-system` as `grove-operator`, enable the matching scheduler
+profile, and provide at least six Ready worker nodes labeled
+`node_role.e2e.grove.nvidia.com=agent`. For KAI, create the `test` queue and disable
+stale-gang eviction with `scheduler.args.default-staleness-grace-period=-1s`.
+
+From the `operator` directory:
+
+```bash
+KUBECONFIG=/path/to/test.kubeconfig \
+GROVE_E2E_SCHEDULER=volcano \
+GROVE_E2E_WORKLOAD_IMAGE=registry:5001/busybox:latest \
+go test -tags=e2e ./e2e/tests -run '^Test_ZR' -count=1 -v -timeout=25m
+```
+
+Use `kai-scheduler` for KAI. The two `GROVE_E2E_*` overrides apply only to the
+hibernation fixture, not the rest of the E2E suite. Set `E2E_REGISTRY_PORT` when
+the host-side test image push endpoint uses a port other than `5001`; the workload
+image must be reachable from every worker.
+
 ### Running in CI/CD
 
 E2E tests are automatically run on GitHub Actions for:
