@@ -709,6 +709,190 @@ func Test_ZR8_RecoveryPreservesLatestScaleTargets(t *testing.T) {
 	waitForGangRecovery(ctx, t, tc, pcsName, componentutils.GangRecoveryComplete)
 }
 
+func Test_ZR9_ScaleInDuringRecoveryDrain(t *testing.T) {
+	const pcsName = "zero-recovery-scale-in"
+	const holdFinalizer = "e2e.grove.io/hold-scale-in"
+	ctx := context.Background()
+	tc, cleanup := prepareIdleWorkload(t, ctx, 6, pcsName, 1, func(pcs *grovecorev1alpha1.PodCliqueSet) {
+		idlePCSGConfig(t, pcs).Replicas = ptr.To(int32(1))
+	})
+	defer cleanup()
+	waitForPodCountAndReady(t, tc, 3)
+	worker := waitForPCLQ(t, ctx, tc, pcsName+"-0-worker")
+	group := &grovecorev1alpha1.PodCliqueScalingGroup{}
+	if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: pcsName + "-0-workers"}, group); err != nil {
+		t.Fatal(err)
+	}
+	waitForPCLQConditionReason(t, ctx, tc, worker.Name, apiconstants.ConditionReasonSufficientReadyPods)
+	held := podsForPCSGIndex(t, tc, "0")[0].DeepCopy()
+	owner := metav1.GetControllerOf(held)
+	if owner == nil {
+		t.Fatal("group Pod has no controller owner")
+	}
+	memberKey := client.ObjectKey{Namespace: tc.Namespace, Name: owner.Name}
+	if err := tc.Client.Patch(ctx, held, client.RawPatch(types.MergePatchType, []byte(
+		`{"metadata":{"finalizers":["`+holdFinalizer+`"]}}`))); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = client.IgnoreNotFound(tc.Client.Patch(ctx, held,
+			client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"finalizers":[]}}`))))
+	}()
+	nodes := tc.SetupAndCordonNodes(6)
+	defer tc.UncordonNodes(nodes)
+	for _, pod := range podsForClique(t, tc, worker.Name) {
+		if err := tc.Client.Delete(ctx, &pod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	draining := waitForGangRecovery(ctx, t, tc, pcsName, componentutils.GangRecoveryDraining)
+	updateScale(t, ctx, tc, group, 0)
+	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
+		member := &grovecorev1alpha1.PodClique{}
+		err := tc.Client.Get(ctx, memberKey, member)
+		return err == nil && !member.DeletionTimestamp.IsZero(), err
+	}); err != nil {
+		t.Fatalf("scale-in did not start member deletion: %v", err)
+	}
+	tc.UncordonNodes(nodes)
+	restartOperator(t, ctx, tc)
+	assertStableFor(t, ctx, zeroReplicaObservationWindow, func(ctx context.Context) error {
+		pcs := &grovecorev1alpha1.PodCliqueSet{}
+		if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: pcsName}, pcs); err != nil {
+			return err
+		}
+		current, err := componentutils.GetGangRecovery(pcs, 0)
+		if err != nil || current != draining {
+			return fmt.Errorf("recovery advanced before scale-in Pods drained: %+v, %v", current, err)
+		}
+		member := &grovecorev1alpha1.PodClique{}
+		if err := tc.Client.Get(ctx, memberKey, member); err != nil {
+			return err
+		}
+		if !slices.Contains(member.Finalizers, apiconstants.FinalizerPodClique) {
+			return fmt.Errorf("member finalizer released before its Pod disappeared")
+		}
+		pod := &corev1.Pod{}
+		if err := tc.Client.Get(ctx, client.ObjectKeyFromObject(held), pod); err != nil {
+			return err
+		}
+		pods, err := tc.ListPods()
+		if err != nil {
+			return err
+		}
+		for _, pod := range pods.Items {
+			if pod.Annotations[componentutils.AnnotationPodRecoveryEpoch] == draining.Epoch {
+				return fmt.Errorf("replacement %s created before the old gang drained", pod.Name)
+			}
+		}
+		return nil
+	})
+	if err := tc.Client.Patch(ctx, held, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"finalizers":[]}}`))); err != nil {
+		t.Fatal(err)
+	}
+	waitForPodCountAndReady(t, tc, 1)
+	waitForGangRecovery(ctx, t, tc, pcsName, componentutils.GangRecoveryComplete)
+	assertScaleStatus(t, ctx, tc, group, 0, true)
+	current := &grovecorev1alpha1.PodCliqueScalingGroup{}
+	if err := tc.Client.Get(ctx, client.ObjectKeyFromObject(group), current); err != nil {
+		t.Fatal(err)
+	}
+	if current.UID != group.UID {
+		t.Fatal("scale-in during recovery replaced its scale target")
+	}
+}
+
+func Test_ZR10_FreshScaleOutEpochWithRetainedMembers(t *testing.T) {
+	const pcsName = "zero-retained-scale-out"
+	ctx := context.Background()
+	tc, cleanup := prepareIdleWorkload(t, ctx, 6, pcsName, 0, func(pcs *grovecorev1alpha1.PodCliqueSet) {
+		config := idlePCSGConfig(t, pcs)
+		config.Replicas, config.MinAvailable = ptr.To(int32(2)), ptr.To(int32(2))
+	})
+	defer cleanup()
+	waitForPodCountAndReady(t, tc, 4)
+	group := &grovecorev1alpha1.PodCliqueScalingGroup{ObjectMeta: metav1.ObjectMeta{
+		Name: pcsName + "-0-workers", Namespace: tc.Namespace,
+	}}
+	updateScale(t, ctx, tc, group, 3)
+	waitForPodCountAndReady(t, tc, 6)
+	waitForPCSGMembership(t, ctx, tc, pcsName, "workers", []int32{0, 1, 2})
+	anchorPods := append(podsForPCSGIndex(t, tc, "0"), podsForPCSGIndex(t, tc, "1")...)
+	anchorLocations := podUIDLocations(anchorPods)
+	oldPods := podUIDLocations(podsForPCSGIndex(t, tc, "2"))
+	oldCliques := pclqUIDsForPCSGIndex(t, ctx, tc, group.Name, "2")
+	pgm := getPGM(t, ctx, tc, pcsName, 0)
+	oldEpoch := ""
+	// Deterministically model the inter-controller gap in 3 -> 2 -> 3:
+	// PCS has emptied ScaleOut while PCSG's old index-2 members still exist.
+	for i := range pgm.Spec.Entries {
+		entry := &pgm.Spec.Entries[i]
+		if entry.Role == grovecorev1alpha1.PodGangEntryRoleScaleOut {
+			oldEpoch = entry.Epoch
+			delete(entry.PCSGReplicaIndices, "workers")
+		}
+	}
+	if oldEpoch == "" {
+		t.Fatal("runtime scale-out did not create a ScaleOut entry")
+	}
+	if err := tc.Client.Update(ctx, pgm); err != nil {
+		t.Fatal(err)
+	}
+	// PGM writes do not enqueue PCS; model the scale event that starts the next pass.
+	if err := workload.NewWorkloadManager(tc.Client, Logger).TriggerPCSReconcile(ctx, tc.Namespace, pcsName, "retained-scale-out"); err != nil {
+		t.Fatal(err)
+	}
+	var newGang string
+	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
+		current := &grovecorev1alpha1.PodGangMap{}
+		if err := tc.Client.Get(ctx, client.ObjectKeyFromObject(pgm), current); err != nil {
+			return false, err
+		}
+		for _, entry := range current.Spec.Entries {
+			if entry.Role == grovecorev1alpha1.PodGangEntryRoleScaleOut &&
+				entry.Epoch != oldEpoch && slices.Equal(entry.PCSGReplicaIndices["workers"], []int32{2}) {
+				newGang = apicommon.GenerateNonAnchorPodGangName(apicommon.ResourceNameReplica{Name: pcsName, Replica: 0}, entry.Epoch, "workers", 2)
+				return true, nil
+			}
+		}
+		return false, nil
+	}); err != nil {
+		t.Fatalf("ScaleOut did not acquire a fresh epoch: %v", err)
+	}
+	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
+		for name, uid := range oldCliques {
+			pclq := &grovecorev1alpha1.PodClique{}
+			if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: name}, pclq); err != nil {
+				return false, client.IgnoreNotFound(err)
+			}
+			if pclq.UID == uid || pclq.Labels[apicommon.LabelPodGang] != newGang {
+				return false, nil
+			}
+		}
+		return true, nil
+	}); err != nil {
+		t.Fatalf("retained members were not reconstructed for the new epoch: %v", err)
+	}
+	waitForPodCountAndReady(t, tc, 6)
+	for _, pod := range podsForPCSGIndex(t, tc, "2") {
+		if _, retained := oldPods[pod.UID]; retained || pod.Labels[apicommon.LabelPodGang] != newGang {
+			t.Fatalf("Pod %s did not get fresh scheduler membership", pod.Name)
+		}
+	}
+	assertRetainedPodLocation(t, append(podsForPCSGIndex(t, tc, "0"), podsForPCSGIndex(t, tc, "1")...), anchorLocations)
+	gang := &groveschedulerv1alpha1.PodGang{}
+	if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: newGang}, gang); err != nil {
+		t.Fatal(err)
+	}
+	native, err := podgroup.GetNativePodGroup(ctx, tc.Client, gang)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := podgroup.VerifyFlatMembership(gang, native); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func waitForGangRecovery(ctx context.Context, t *testing.T, tc *testctx.TestContext, pcsName, phase string) componentutils.GangRecovery {
 	t.Helper()
 	var recovery componentutils.GangRecovery

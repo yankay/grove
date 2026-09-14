@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	apiconstants "github.com/ai-dynamo/grove/operator/api/common/constants"
@@ -26,6 +27,7 @@ import (
 	"github.com/ai-dynamo/grove/operator/internal/constants"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	podgangmapcomponent "github.com/ai-dynamo/grove/operator/internal/controller/podcliqueset/components/podgangmap"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/mnnvl"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
@@ -39,6 +41,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/tools/record"
+	clocktesting "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -47,6 +50,52 @@ const (
 	testPCSName      = "coyote"
 	testPCSNamespace = "cobalt-ns"
 )
+
+func TestRecreateMissingIdleStandaloneAfterMembershipRemoval(t *testing.T) {
+	ctx := context.Background()
+	pcs := testutils.NewPodCliqueSetBuilder("pcs", "default", "pcs-uid").
+		WithReplicas(1).WithStandaloneCliqueReplicas("router", 1).
+		WithStandaloneCliqueReplicas("worker", 1).
+		WithPodCliqueSetGenerationHash(ptr.To("generation")).
+		WithCliqueStartupType(ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder)).Build()
+	cl := testutils.NewTestClientBuilder().WithObjects(pcs).Build()
+	pgmOperator := podgangmapcomponent.New(cl, cl.Scheme(), clocktesting.NewFakeClock(time.Unix(0, 100)))
+	r := _resource{client: cl, scheme: cl.Scheme(), eventRecorder: record.NewFakeRecorder(20)}
+	pgm := &grovecorev1alpha1.PodGangMap{}
+	pgmKey := client.ObjectKey{Name: "pcs-0", Namespace: pcs.Namespace}
+	require.NoError(t, pgmOperator.Sync(ctx, logr.Discard(), pcs))
+	require.NoError(t, cl.Get(ctx, pgmKey, pgm))
+	routerKey := client.ObjectKey{Name: "pcs-0-router", Namespace: pcs.Namespace}
+	workerKey := client.ObjectKey{Name: "pcs-0-worker", Namespace: pcs.Namespace}
+	require.NoError(t, r.doCreateOrUpdate(ctx, logr.Discard(), pcs, 0, pgm, routerKey))
+	require.NoError(t, r.doCreateOrUpdate(ctx, logr.Discard(), pcs, 0, pgm, workerKey))
+	router := &grovecorev1alpha1.PodClique{}
+	require.NoError(t, cl.Get(ctx, routerKey, router))
+	worker := &grovecorev1alpha1.PodClique{}
+	require.NoError(t, cl.Get(ctx, workerKey, worker))
+	worker.Spec.Replicas = 0
+	require.NoError(t, cl.Update(ctx, worker))
+	require.NoError(t, pgmOperator.Sync(ctx, logr.Discard(), pcs))
+	require.NoError(t, cl.Get(ctx, pgmKey, pgm))
+	require.NotContains(t, pgm.Spec.Entries[0].PodCliques, "worker")
+	epoch := pgm.Spec.Entries[0].Epoch
+	// Explicit target deletion is not recovery: recreation initializes from the
+	// template. Simulate finalizer release after its already-idle Pods are gone.
+	worker.Finalizers = nil
+	require.NoError(t, cl.Update(ctx, worker))
+	require.NoError(t, cl.Delete(ctx, worker))
+	require.NoError(t, pgmOperator.Sync(ctx, logr.Discard(), pcs))
+	require.NoError(t, cl.Get(ctx, pgmKey, pgm))
+	require.Equal(t, epoch, pgm.Spec.Entries[0].Epoch)
+	require.EqualValues(t, 1, pgm.Spec.Entries[0].PodCliques["worker"])
+	require.NoError(t, r.doCreateOrUpdate(ctx, logr.Discard(), pcs, 0, pgm, workerKey))
+	require.NoError(t, cl.Get(ctx, workerKey, worker))
+	require.EqualValues(t, 1, worker.Spec.Replicas)
+	require.Equal(t, apicommon.GenerateAnchorPodGangName(apicommon.ResourceNameReplica{Name: pcs.Name, Replica: 0}, epoch), worker.Labels[apicommon.LabelPodGang])
+	actualRouter := &grovecorev1alpha1.PodClique{}
+	require.NoError(t, cl.Get(ctx, routerKey, actualRouter))
+	require.Equal(t, router, actualRouter)
+}
 
 func TestGetExistingResourceNames(t *testing.T) {
 	testCases := []struct {

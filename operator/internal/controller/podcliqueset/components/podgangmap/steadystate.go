@@ -253,18 +253,24 @@ func refreshStandalonePodCliqueCounts(entries []grovecorev1alpha1.PodGangEntry,
 	currentHash := *pcs.Status.CurrentGenerationHash
 	pcsRnr := apicommon.ResourceNameReplica{Name: pcs.Name, Replica: pcsReplicaIndex}
 	anchorsHighestFirst := currentGenerationAnchorsByIndexDesc(entries, currentHash)
+	// Missing scale targets are initialized from the template on recreation. Author
+	// their membership first so child creation does not depend on the child existing.
+	desiredCounts := componentutils.GetStandalonePCLQReplicasFromPCSTemplateSpec(pcs)
 	for _, standalonePCLQ := range standalonePCLQs {
 		cliqueName := apicommon.ExtractPodCliqueNameFromStandalonePCLQFQN(standalonePCLQ.Name, pcsRnr)
-		if standalonePCLQ.Spec.Replicas == 0 {
+		desiredCounts[cliqueName] = standalonePCLQ.Spec.Replicas
+	}
+	for cliqueName, replicas := range desiredCounts {
+		if replicas == 0 {
 			for _, anchor := range anchorsHighestFirst {
 				delete(anchor.PodCliques, cliqueName)
 			}
 			continue
 		}
 		if len(anchorsHighestFirst) == 0 {
-			return fmt.Errorf("current generation %q has no anchor for standalone PodClique %s", currentHash, standalonePCLQ.Name)
+			return fmt.Errorf("current generation %q has no anchor for standalone PodClique %s", currentHash, cliqueName)
 		}
-		reconcileStandaloneCliqueCountAcrossAnchors(anchorsHighestFirst, cliqueName, standalonePCLQ.Spec.Replicas)
+		reconcileStandaloneCliqueCountAcrossAnchors(anchorsHighestFirst, cliqueName, replicas)
 	}
 	return nil
 }

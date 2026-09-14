@@ -312,6 +312,7 @@ func oldHashPodGangMap(pcsName, namespace string, replicaIndex int) *grovecorev1
 	return testutils.NewPodGangMapBuilder(pcsName, namespace, types.UID("uid"), replicaIndex).
 		WithEntries(testutils.NewPodGangEntryBuilder("old-hash", "100").
 			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
+			WithAnchorIndex(0).
 			WithPodCliques(map[string]int32{"clq-a": 1}).Build()).
 		Build()
 }

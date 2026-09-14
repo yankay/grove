@@ -216,6 +216,32 @@ func TestRepeatedHibernationAfterGenerationChange(t *testing.T) {
 	}
 }
 
+func TestScaleOutEpochRotatesAfterScalingToMinimum(t *testing.T) {
+	pcs := testutils.NewPodCliqueSetBuilder(testPCSName, testNamespace, testPCSUID).
+		WithScalingGroupConfig(testPCSGName, []string{"c"}, 2, 2).
+		WithPodCliqueSetGenerationHash(ptr.To(testGenHash)).Build()
+	pgm := &grovecorev1alpha1.PodGangMap{Spec: grovecorev1alpha1.PodGangMapSpec{
+		Entries: []grovecorev1alpha1.PodGangEntry{
+			anchorEntry(nil, map[string][]int32{testPCSGName: {0, 1}}),
+			scaleOutEntry(map[string][]int32{testPCSGName: {2}}),
+		},
+	}}
+	originalAnchor := pgm.Spec.Entries[0].DeepCopy()
+	oldEpoch := pgm.Spec.Entries[1].Epoch
+	clk := clocktesting.NewFakeClock(time.Unix(0, 5000))
+	var err error
+	pgm.Spec.Entries, err = reconcileEntries(clk, pcs, 0, pgm, nil, nil, []grovecorev1alpha1.PodCliqueScalingGroup{pcsg(2)})
+	require.NoError(t, err)
+	empty := testutils.EntryByRole(pgm.Spec.Entries, grovecorev1alpha1.PodGangEntryRoleScaleOut)
+	require.True(t, componentutils.IsPodGangEntryEmpty(empty))
+	pgm.Spec.Entries, err = reconcileEntries(clk, pcs, 0, pgm, nil, nil, []grovecorev1alpha1.PodCliqueScalingGroup{pcsg(3)})
+	require.NoError(t, err)
+	woken := testutils.EntryByRole(pgm.Spec.Entries, grovecorev1alpha1.PodGangEntryRoleScaleOut)
+	require.NotEqual(t, oldEpoch, woken.Epoch)
+	require.Equal(t, []int32{2}, woken.PCSGReplicaIndices[testPCSGName])
+	require.Equal(t, *originalAnchor, testutils.EntryByRole(pgm.Spec.Entries, grovecorev1alpha1.PodGangEntryRoleAnchor))
+}
+
 func TestMultiplePCSGWakesRestoreAnchorQuorums(t *testing.T) {
 	pcs := testutils.NewPodCliqueSetBuilder(testPCSName, testNamespace, testPCSUID).
 		WithStandaloneCliqueReplicas("router", 1).

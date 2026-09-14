@@ -76,12 +76,24 @@ target. A second recovery verifies re-arming and an idle scaling group across a
 restart during recreation. `Test_GT7` verifies that a first wake only arms
 termination after actual health and that recovery retains its positive target.
 
+`Test_ZR9` scales a PCSG to zero while an old member Pod is held by a finalizer.
+It requires recovery to remain in Draining across an operator restart, even with
+capacity available, until that Pod and its owning PodClique disappear.
+`Test_ZR10` models the inter-controller gap in a fast scale-in/out cycle by
+emptying the ScaleOut slot while its old members still exist, then explicitly
+triggering PCS reconciliation. It requires fresh member PodCliques and Ready Pods
+in the new epoch, matching native PodGroup membership, and undisturbed anchor
+Pods.
+
 Automatic recovery retains the PodClique and PodCliqueScalingGroup scale objects.
 PCS annotations record each replica's recovery epoch and phase; replacement Pods
 carry that epoch, so a controller restart or late old-epoch Pod creation cannot
 reset replica intent. Old Pods must drain before recreation, and recovery remains
 disarmed until replacement Pods satisfy the active components' availability
 thresholds. These controller-owned annotations are not a user-facing scale API.
+During cascading deletion, member PodCliques retain their finalizer until an
+uncached read confirms that all owned Pods are gone, so concurrent PCSG scale-in
+cannot bypass the drain. Explicit orphan deletion still leaves Pods to the caller.
 Replacement Pods resolve startup dependencies from current gang membership rather
 than retained dependencies on components that have since gone idle.
 Explicitly deleting a scale object or scaling in a top-level PCS replica is outside
