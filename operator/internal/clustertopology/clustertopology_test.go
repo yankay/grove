@@ -298,7 +298,6 @@ func newKAIBackendMap(t *testing.T, cl client.Client) map[string]scheduler.Topol
 	t.Helper()
 	profile := configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai}
 	b := kai.New(cl, cl.Scheme(), nil, profile)
-	require.NoError(t, b.Init(cl))
 	return map[string]scheduler.TopologyAwareBackend{b.Name(): b.(scheduler.TopologyAwareBackend)}
 }
 

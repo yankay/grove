@@ -71,8 +71,6 @@ def install_kai_scheduler(cfg: KaiConfig) -> None:
         "global.tolerations[1].value=agent",
         "--set",
         "global.tolerations[1].effect=NoSchedule",
-        "--set-string",
-        "scheduler.args.default-staleness-grace-period=-1s",
     )
     console.print("[green]\u2705 Kai Scheduler installed[/green]")
 

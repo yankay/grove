@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
@@ -65,6 +66,9 @@ func VerifyFlatMembership(gang *groveschedulerv1alpha1.PodGang, native client.Ob
 	var actualTotal int32
 	switch pg := native.(type) {
 	case *kaischedulingv2alpha2.PodGroup:
+		if pg.Spec.StalenessGracePeriod == nil || pg.Spec.StalenessGracePeriod.Duration != -time.Second {
+			return fmt.Errorf("managed KAI PodGroup %s must disable its own stale-gang eviction", pg.Name)
+		}
 		actualTotal = ptr.Deref(pg.Spec.MinMember, -1)
 		for _, group := range pg.Spec.SubGroups {
 			if group.Parent != nil {

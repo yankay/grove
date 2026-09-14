@@ -17,6 +17,7 @@ package kai
 import (
 	"context"
 	"testing"
+	"time"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
@@ -28,13 +29,95 @@ import (
 	kaischedulingv2alpha2 "github.com/kai-scheduler/KAI-scheduler/pkg/apis/scheduling/v2alpha2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
+
+func TestBackend_Init(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version string
+		served  bool
+		field   bool
+		missing bool
+		wantErr bool
+	}{
+		{name: "supported", version: "v2alpha2", served: true, field: true},
+		{name: "old CRD", version: "v2alpha2", served: true, wantErr: true},
+		{name: "unserved version", version: "v2alpha2", field: true, wantErr: true},
+		{name: "different version", version: "v1", served: true, field: true, wantErr: true},
+		{name: "missing CRD", missing: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			require.NoError(t, apiextensionsv1.AddToScheme(scheme))
+			cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+			if !tc.missing {
+				crd := schedulertest.NewKAIPodGroupCRD()
+				version := &crd.Spec.Versions[0]
+				version.Name, version.Served = tc.version, tc.served
+				if !tc.field {
+					delete(version.Schema.OpenAPIV3Schema.Properties["spec"].Properties, "stalenessGracePeriod")
+				}
+				require.NoError(t, cl.Create(context.Background(), crd))
+			}
+			b := New(cl, scheme, record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
+			err := b.Init(cl)
+			if tc.wantErr {
+				require.ErrorContains(t, err, "requires KAI v0.17.0")
+				if tc.missing {
+					assert.True(t, apierrors.IsNotFound(err))
+				}
+			} else {
+				require.NoError(t, err)
+				assert.True(t, scheme.Recognizes(kaischedulingv2alpha2.SchemeGroupVersion.WithKind("PodGroup")))
+			}
+		})
+	}
+}
+
+func TestBackend_StaleEvictionPolicyIsWorkloadScoped(t *testing.T) {
+	ctx := context.Background()
+	pcs := newPodCliqueSet("pcs", "test")
+	gang := testutils.NewPodGangBuilder("gang", "default").WithSchedulerName(string(configv1alpha1.SchedulerNameKai)).Build()
+	gang.Spec.PodGroups = []groveschedulerv1alpha1.PodGroup{{Name: "worker", MinReplicas: 1}}
+	setPodCliqueSetControllerOwner(gang, pcs)
+	unmanaged := &kaischedulingv2alpha2.PodGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "unmanaged", Namespace: "default"},
+		Spec: kaischedulingv2alpha2.PodGroupSpec{
+			StalenessGracePeriod: &metav1.Duration{Duration: time.Minute},
+		},
+	}
+	cl := schedulertest.NewKAIClient(t, pcs, gang, unmanaged)
+	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
+	checker := b.(interface {
+		IsPodGangSynced(context.Context, *groveschedulerv1alpha1.PodGang) (bool, error)
+	})
+	require.NoError(t, b.SyncPodGang(ctx, gang))
+	current := &kaischedulingv2alpha2.PodGroup{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(gang), current))
+	require.Equal(t, &metav1.Duration{Duration: -time.Second}, current.Spec.StalenessGracePeriod)
+	current.Spec.StalenessGracePeriod = nil
+	require.NoError(t, cl.Update(ctx, current))
+	synced, err := checker.IsPodGangSynced(ctx, gang)
+	require.NoError(t, err)
+	assert.False(t, synced, "legacy or drifted eviction policy must hold scheduling gates")
+	require.NoError(t, b.SyncPodGang(ctx, gang))
+	synced, err = checker.IsPodGangSynced(ctx, gang)
+	require.NoError(t, err)
+	assert.True(t, synced)
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(gang), current))
+	assert.Equal(t, &metav1.Duration{Duration: -time.Second}, current.Spec.StalenessGracePeriod)
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(unmanaged), current))
+	assert.Equal(t, unmanaged.Spec, current.Spec)
+}
 
 func TestBackend_PreparePod(t *testing.T) {
 	cl := testutils.CreateDefaultFakeClient(nil)
@@ -136,7 +219,6 @@ func TestBackend_SyncPodGang_CreateAndUpdate(t *testing.T) {
 	recorder := record.NewFakeRecorder(10)
 	profile := configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai}
 	b := New(cl, cl.Scheme(), recorder, profile)
-	require.NoError(t, b.Init(cl))
 
 	ctx := context.Background()
 	require.NoError(t, b.SyncPodGang(ctx, podGang))
@@ -326,7 +408,6 @@ func TestBackend_SyncPodGang_RestoresStandaloneFloor(t *testing.T) {
 	cl := schedulertest.NewKAIClient(t, pcs, podGang)
 	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10),
 		configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
-	require.NoError(t, b.Init(cl))
 	require.NoError(t, b.SyncPodGang(ctx, podGang))
 	before := &kaischedulingv2alpha2.PodGroup{}
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(podGang), before))
@@ -376,7 +457,6 @@ func TestBackend_SyncPodGang_SkipsEmptyTopologyConstraintGroups(t *testing.T) {
 
 	cl := schedulertest.NewKAIClient(t, pcs, podGang)
 	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
-	require.NoError(t, b.Init(cl))
 
 	ctx := context.Background()
 	require.NoError(t, b.SyncPodGang(ctx, podGang))
@@ -404,7 +484,6 @@ func TestBackend_SyncPodGangSetsOwnerReferenceAndSkipAnnotation(t *testing.T) {
 	recorder := record.NewFakeRecorder(10)
 	profile := configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai}
 	b := New(cl, cl.Scheme(), recorder, profile)
-	require.NoError(t, b.Init(cl))
 
 	ctx := context.Background()
 	require.NoError(t, b.SyncPodGang(ctx, podGang))
@@ -435,7 +514,6 @@ func TestBackend_SyncPodGang_UsesUniquePodCliqueTemplateQueue(t *testing.T) {
 
 	cl := schedulertest.NewKAIClient(t, pcs, podGang)
 	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
-	require.NoError(t, b.Init(cl))
 
 	ctx := context.Background()
 	require.NoError(t, b.SyncPodGang(ctx, podGang))
@@ -603,7 +681,6 @@ func TestBackend_SyncPodGang_QueueResolutionFailuresDoNotCreatePodGroup(t *testi
 
 			cl := schedulertest.NewKAIClient(t, objects...)
 			b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
-			require.NoError(t, b.Init(cl))
 
 			err := b.SyncPodGang(context.Background(), podGang)
 			require.ErrorContains(t, err, tt.wantErrSubstr)
