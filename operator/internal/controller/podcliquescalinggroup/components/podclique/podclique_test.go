@@ -998,7 +998,6 @@ func TestResolvePodGangName(t *testing.T) {
 	}{
 		{"anchor index resolves to the anchor PodGang name", 0, apicommon.GenerateAnchorPodGangName(rnr, anchorEpoch)},
 		{"tail index resolves to a non-anchor PodGang name at the tail epoch", 2, apicommon.GenerateNonAnchorPodGangName(rnr, tailEpoch, pcsgConfig, 2)},
-		{"not-yet-placed scale-out index resolves at the ScaleOut epoch", 5, apicommon.GenerateNonAnchorPodGangName(rnr, scaleOutEpoch, pcsgConfig, 5)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1007,6 +1006,12 @@ func TestResolvePodGangName(t *testing.T) {
 			assert.Equal(t, test.expectedName, actual)
 		})
 	}
+
+	t.Run("unplaced index waits for PodGangMap even with a ScaleOut slot", func(t *testing.T) {
+		name, err := resolvePodGangName(pgm, rnr, pcsg, 5)
+		require.Error(t, err)
+		assert.Empty(t, name)
+	})
 
 	t.Run("errors when the index is unresolvable and no ScaleOut entry exists", func(t *testing.T) {
 		anchorOnly := testutils.NewPodGangMapBuilder(pcsName, namespace, "uid", 0).WithEntries(

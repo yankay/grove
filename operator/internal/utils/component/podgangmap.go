@@ -219,12 +219,8 @@ func DependsOnForEpoch(pgm *grovecorev1alpha1.PodGangMap, epoch string) ([]strin
 }
 
 // podGangEntryForPCSGReplica returns the PodGangMap entry that a PodCliqueScalingGroup replica index
-// belongs to. It first returns the entry whose PCSGReplicaIndices for pcsgName already contains the
-// index. When no entry has placed the index yet — the case for a scale-out replica whose index the
-// PodGangMap component has not appended to the ScaleOut entry in this reconcile pass — it returns the
-// pre-created ScaleOut entry, whose epoch every scale-out replica shares. It returns an error when
-// neither an owning entry nor a ScaleOut entry exists, which is a contract violation for a
-// PodCliqueScalingGroup-owned PodClique and must be requeued rather than resolved to an empty name.
+// belongs to. Missing placement is retried: guessing ScaleOut before the PodGangMap observes a
+// wake would permanently attach the minimum replicas to the wrong PodGang.
 // It does not filter by generation hash: a replica's PodGangMap holds a single generation's entries,
 // and during a rolling update only the under-update replica's entries advance, so a lagging replica
 // is resolved against its own entries.
@@ -233,20 +229,7 @@ func podGangEntryForPCSGReplica(pgm *grovecorev1alpha1.PodGangMap, pcsgName stri
 	if err != nil || entry != nil {
 		return entry, err
 	}
-	var scaleOut *grovecorev1alpha1.PodGangEntry
-	for i := range pgm.Spec.Entries {
-		entry := &pgm.Spec.Entries[i]
-		if entry.Role == grovecorev1alpha1.PodGangEntryRoleScaleOut {
-			if scaleOut != nil {
-				return nil, fmt.Errorf("PodGangMap %s has multiple ScaleOut entries", pgm.Name)
-			}
-			scaleOut = entry
-		}
-	}
-	if scaleOut != nil {
-		return scaleOut, nil
-	}
-	return nil, fmt.Errorf("no PodGangMap entry owns replica index %d of PodCliqueScalingGroup %q and no ScaleOut entry exists in PodGangMap %s", pcsgReplicaIndex, pcsgName, pgm.Name)
+	return nil, fmt.Errorf("no PodGangMap entry owns replica index %d of PodCliqueScalingGroup %q in PodGangMap %s", pcsgReplicaIndex, pcsgName, pgm.Name)
 }
 
 // FindPodGangEntryForPCSGReplica resolves exact membership, optionally within one generation.
