@@ -42,6 +42,7 @@ import (
 type Reconciler struct {
 	config                  configv1alpha1.PodCliqueControllerConfiguration
 	client                  ctrlclient.Client
+	apiReader               ctrlclient.Reader
 	eventRecorder           record.EventRecorder
 	reconcileStatusRecorder ctrlcommon.ReconcileErrorRecorder
 	expectationsStore       *expect.ExpectationsStore
@@ -60,6 +61,7 @@ func NewReconciler(mgr ctrl.Manager, controllerCfg configv1alpha1.PodCliqueContr
 	return &Reconciler{
 		config:                  controllerCfg,
 		client:                  mgr.GetClient(),
+		apiReader:               mgr.GetAPIReader(),
 		eventRecorder:           eventRecorder,
 		reconcileStatusRecorder: ctrlcommon.NewReconcileErrorRecorder(mgr.GetClient()),
 		expectationsStore:       expectationsStore,

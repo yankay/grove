@@ -122,6 +122,10 @@ func (r _resource) runSyncFlow(ctx context.Context, logger logr.Logger, ss *sync
 	if err := r.triggerDeletionOfExcessPCSGReplicas(ctx, logger, ss); err != nil {
 		return err
 	}
+	retiringPCLQs, err := r.recreateStaleScaleOutPCLQs(ctx, ss)
+	if err != nil {
+		return err
+	}
 	if err := r.syncPCSGPodIndexOffsets(ctx, ss); err != nil {
 		return err
 	}
@@ -129,13 +133,16 @@ func (r _resource) runSyncFlow(ctx context.Context, logger logr.Logger, ss *sync
 	// For OnDelete update strategy, use createOrUpdatePCLQs which performs in-place updates.
 	// For RollingRecreate (default) update strategy, use createExpectedPCLQs which only creates missing PodCliques.
 	if !componentutils.IsAutoUpdateStrategy(ss.pcs) {
-		if err := r.createOrUpdatePCLQs(ctx, logger, ss); err != nil {
+		if err := r.createOrUpdatePCLQs(ctx, logger, ss, retiringPCLQs); err != nil {
 			return err
 		}
 	} else {
 		if err := r.createExpectedPCLQs(ctx, logger, ss); err != nil {
 			return err
 		}
+	}
+	if len(retiringPCLQs) > 0 {
+		return groveerr.New(groveerr.ErrCodeRequeueAfter, component.OperationSync, "waiting for retired ScaleOut PodCliques and Pods to drain")
 	}
 
 	// Only if the rolling update is not in progress, check for a possibility of gang termination and execute it only if
@@ -165,6 +172,52 @@ func (r _resource) runSyncFlow(ctx context.Context, logger logr.Logger, ss *sync
 		)
 	}
 	return nil
+}
+
+// recreateStaleScaleOutPCLQs handles a scale-in/out cycle observed by the PCS
+// controller before the PCSG controller deletes the old members. A fresh epoch
+// needs fresh Pods with scheduler-native membership and gates, not label adoption.
+func (r _resource) recreateStaleScaleOutPCLQs(ctx context.Context, ss *syncSnapshot) (componentutils.Set[string], error) {
+	rnr := apicommon.ResourceNameReplica{Name: ss.pcs.Name, Replica: ss.pcsReplicaIndex}
+	configName, err := apicommon.ExtractScalingGroupNameFromPCSGFQN(ss.pcsg.Name, rnr)
+	if err != nil {
+		return nil, err
+	}
+	existingByName := make(map[string]*grovecorev1alpha1.PodClique, len(ss.existingPCLQs))
+	for i := range ss.existingPCLQs {
+		pclq := &ss.existingPCLQs[i]
+		existingByName[pclq.Name] = pclq
+	}
+	retiring := make(componentutils.Set[string])
+	for replicaIndex, names := range ss.expectedPCLQFQNsPerPCSGReplica {
+		entry, err := componentutils.FindPodGangEntryForPCSGReplica(ss.pgm.Spec.Entries, "", configName, int32(replicaIndex))
+		if err != nil {
+			return nil, err
+		}
+		if entry == nil || entry.Role != grovecorev1alpha1.PodGangEntryRoleScaleOut {
+			continue
+		}
+		desiredGang := apicommon.GenerateNonAnchorPodGangName(rnr, entry.Epoch, configName, int32(replicaIndex))
+		for _, name := range names {
+			pclq := existingByName[name]
+			if pclq == nil || !metav1.IsControlledBy(pclq, ss.pcsg) ||
+				pclq.Labels[apicommon.LabelPodGang] == desiredGang {
+				continue
+			}
+			if !metav1.IsControlledBy(ss.pcsg, ss.pcs) || !metav1.IsControlledBy(ss.pgm, ss.pcs) ||
+				!ctrlutils.IsManagedByGrove(ss.pgm.Labels) {
+				return nil, groveerr.New(groveerr.ErrCodeRequeueAfter, component.OperationSync, "waiting for Grove-owned ScaleOut placement")
+			}
+			retiring[pclq.Name] = struct{}{}
+			if !pclq.DeletionTimestamp.IsZero() {
+				continue
+			}
+			if err := client.IgnoreNotFound(r.client.Delete(ctx, pclq, client.Preconditions{UID: &pclq.UID, ResourceVersion: &pclq.ResourceVersion})); err != nil {
+				return nil, fmt.Errorf("delete PodClique %s from a retired ScaleOut epoch: %w", pclq.Name, err)
+			}
+		}
+	}
+	return retiring, nil
 }
 
 // syncPCSGPodIndexOffsets reconciles internal offsets on existing PodCliques without recreating them.
@@ -385,10 +438,13 @@ func (r _resource) createExpectedPCLQs(ctx context.Context, logger logr.Logger, 
 
 // createOrUpdatePCLQs creates or updates all expected PodCliques for the PodCliqueScalingGroup.
 // This is used for the OnDelete update strategy where changes are applied in place rather than through recreation.
-func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, ss *syncSnapshot) error {
+func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, ss *syncSnapshot, retiringPCLQs componentutils.Set[string]) error {
 	var tasks []utils.Task
 	for pcsgReplicaIndex, expectedPCLQNames := range ss.expectedPCLQFQNsPerPCSGReplica {
 		for _, pclqFQN := range expectedPCLQNames {
+			if retiringPCLQs.Has(pclqFQN) {
+				continue
+			}
 			pclqObjectKey := client.ObjectKey{
 				Name:      pclqFQN,
 				Namespace: ss.pcsg.Namespace,

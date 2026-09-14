@@ -95,6 +95,13 @@ func (r _resource) advanceGangRecovery(ctx context.Context, pcs *grovecorev1alph
 	if err != nil {
 		return err
 	}
+	// A deleting PodClique retains its finalizer until an uncached Pod list
+	// confirms the drain. Its Pods and the clique can reach our caches separately.
+	for _, pclq := range snapshot.pclqs {
+		if !pclq.DeletionTimestamp.IsZero() {
+			return nil
+		}
+	}
 	for _, pod := range snapshot.pods {
 		if pod.Annotations[componentutils.AnnotationPodRecoveryEpoch] != recovery.Epoch {
 			return nil

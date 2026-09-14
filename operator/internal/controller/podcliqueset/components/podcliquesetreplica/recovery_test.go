@@ -164,6 +164,70 @@ func TestRecoveryAvailabilityRequiresExistingOwnedTargets(t *testing.T) {
 	assert.False(t, snapshot.available(pcs, 0, "epoch"), "missing or foreign clique is not an idle target")
 }
 
+func TestRecoveryWaitsForDeletingScaleInMembers(t *testing.T) {
+	ctx := context.Background()
+	pcs := testutils.NewPodCliqueSetBuilder("pcs", "default", "pcs-uid").WithReplicas(1).
+		WithScalingGroupConfig("group", []string{"worker"}, 1, 1).Build()
+	pcsg := &grovecorev1alpha1.PodCliqueScalingGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pcs-0-group", Namespace: pcs.Namespace, UID: "group-uid",
+			Labels: map[string]string{apicommon.LabelPartOfKey: pcs.Name, apicommon.LabelPodCliqueSetReplicaIndex: "0"},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: grovecorev1alpha1.SchemeGroupVersion.String(), Kind: apiconstants.KindPodCliqueSet,
+				Name: pcs.Name, UID: pcs.UID, Controller: ptr.To(true),
+			}},
+		},
+		Spec: grovecorev1alpha1.PodCliqueScalingGroupSpec{
+			Replicas: 0, MinAvailable: ptr.To(int32(1)), CliqueNames: []string{"worker"},
+		},
+	}
+	pclq := recoveryClique(pcs, "pcs-0-group-0-worker", 1)
+	pclq.OwnerReferences[0].Kind = apiconstants.KindPodCliqueScalingGroup
+	pclq.OwnerReferences[0].Name, pclq.OwnerReferences[0].UID = pcsg.Name, pcsg.UID
+	pclq.Finalizers = []string{apiconstants.FinalizerPodClique}
+	pod := recoveryPod(pclq, "old-pod", "", true)
+	pod.Finalizers = []string{"example.com/hold"}
+	cl := testutils.NewTestClientBuilder().WithObjects(pcs, pcsg, pclq, pod).Build()
+	r := _resource{client: cl}
+	require.NoError(t, r.startGangRecovery(ctx, pcs, 0))
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pcs), pcs))
+	draining, err := componentutils.GetGangRecovery(pcs, 0)
+	require.NoError(t, err)
+	require.NoError(t, cl.Delete(ctx, pclq))
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pclq), pclq))
+	require.NoError(t, r.advanceGangRecovery(ctx, pcs, 0, draining))
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pcs), pcs))
+	got, err := componentutils.GetGangRecovery(pcs, 0)
+	require.NoError(t, err)
+	require.Equal(t, draining, got)
+	// Even after the Pod cache reports no Pods, the clique's finalizer remains
+	// the drain barrier until its controller has independently confirmed absence.
+	require.NoError(t, cl.Delete(ctx, pod))
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pod), pod))
+	pod.Finalizers = nil
+	require.NoError(t, cl.Update(ctx, pod))
+	restarted := _resource{client: cl}
+	require.NoError(t, restarted.advanceGangRecovery(ctx, pcs, 0, draining))
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pcs), pcs))
+	got, err = componentutils.GetGangRecovery(pcs, 0)
+	require.NoError(t, err)
+	require.Equal(t, draining, got)
+	pclq.Finalizers = nil
+	require.NoError(t, cl.Update(ctx, pclq))
+	require.NoError(t, restarted.advanceGangRecovery(ctx, pcs, 0, draining))
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pcs), pcs))
+	recreating, err := componentutils.GetGangRecovery(pcs, 0)
+	require.NoError(t, err)
+	require.Equal(t, componentutils.GangRecoveryRecreating, recreating.Phase)
+	require.NoError(t, restarted.advanceGangRecovery(ctx, pcs, 0, recreating))
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pcs), pcs))
+	got, err = componentutils.GetGangRecovery(pcs, 0)
+	require.NoError(t, err)
+	require.Equal(t, componentutils.GangRecoveryComplete, got.Phase)
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pcsg), pcsg))
+	require.Zero(t, pcsg.Spec.Replicas)
+}
+
 func TestPruneGangRecoveriesOnScaleIn(t *testing.T) {
 	ctx := context.Background()
 	pcs := testutils.NewPodCliqueSetBuilder("pcs", "default", "pcs-uid").WithReplicas(1).Build()
