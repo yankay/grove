@@ -26,6 +26,7 @@ import (
 	kubeutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -60,6 +61,33 @@ func (pm *PodManager) List(ctx context.Context, namespace, labelSelector string)
 		return nil, fmt.Errorf("failed to list pods in namespace %s: %w", namespace, err)
 	}
 	return &podList, nil
+}
+
+// RestartAndWait restarts a single-replica controller selected by labels. Both
+// old-Pod removal and replacement readiness are required before returning.
+func (pm *PodManager) RestartAndWait(ctx context.Context, namespace, labelSelector string, timeout, interval time.Duration) error {
+	if namespace == "" || labelSelector == "" {
+		return fmt.Errorf("restart requires an explicit namespace and label selector")
+	}
+	current, err := pm.List(ctx, namespace, labelSelector)
+	if err != nil {
+		return err
+	}
+	if len(current.Items) != 1 {
+		return fmt.Errorf("restart %s/%s: got %d Pods, want 1", namespace, labelSelector, len(current.Items))
+	}
+	old := &current.Items[0]
+	if err := pm.cl.Delete(ctx, old, client.Preconditions{UID: &old.UID}); err != nil {
+		return fmt.Errorf("delete Pod %s/%s for restart: %w", namespace, old.Name, err)
+	}
+	return wait.PollUntilContextTimeout(ctx, interval, timeout, true, func(ctx context.Context) (bool, error) {
+		replacement, err := pm.List(ctx, namespace, labelSelector)
+		if err != nil {
+			return false, err
+		}
+		return len(replacement.Items) == 1 && replacement.Items[0].UID != old.UID &&
+			replacement.Items[0].DeletionTimestamp.IsZero() && kubeutils.IsPodReady(&replacement.Items[0]), nil
+	})
 }
 
 // WaitForReady waits for pods to be ready in the specified namespaces.
