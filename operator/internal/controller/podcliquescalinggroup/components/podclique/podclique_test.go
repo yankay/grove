@@ -1477,6 +1477,21 @@ func TestEnsurePCSGScaleInReady(t *testing.T) {
 		testutils.AssertGroveError(t, &groveerr.GroveError{Code: groveerr.ErrCodeRequeueAfter, Operation: component.OperationSync}, run(t, pgm.DeepCopy(), stalePodGang))
 	})
 
+	t.Run("waits for references on a terminating PodGang", func(t *testing.T) {
+		stalePodGang := newPodGang("test-pcs-0-1000", targetPCLQName, pcsUID)
+		stalePodGang.DeletionTimestamp = ptr.To(metav1.Now())
+		stalePodGang.Finalizers = []string{"test.grove.io/hold"}
+		testutils.AssertGroveError(t, &groveerr.GroveError{Code: groveerr.ErrCodeRequeueAfter, Operation: component.OperationSync}, run(t, pgm.DeepCopy(), stalePodGang))
+	})
+
+	t.Run("allows deletion when a terminating PodGang has dropped its references", func(t *testing.T) {
+		drainedPodGang := newPodGang("test-pcs-0-1000", targetPCLQName, pcsUID)
+		drainedPodGang.DeletionTimestamp = ptr.To(metav1.Now())
+		drainedPodGang.Finalizers = []string{"test.grove.io/hold"}
+		drainedPodGang.Spec.PodGroups = nil
+		require.NoError(t, run(t, pgm.DeepCopy(), drainedPodGang))
+	})
+
 	t.Run("ignores PodGroups for retained replica indices", func(t *testing.T) {
 		retainedPCLQName := apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{Name: pcsgName, Replica: 0}, "worker")
 		require.NoError(t, run(t, pgm.DeepCopy(), newPodGang("test-pcs-0-1000", retainedPCLQName, pcsUID)))

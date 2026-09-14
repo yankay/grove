@@ -46,7 +46,7 @@ The test suite will:
 
 ### Hibernation Backend Tests
 
-The `Test_ZR*` tests also run against an existing cluster with KAI or Volcano.
+The `Test_ZR*` and `Test_GS13*` tests also run against an existing cluster with KAI or Volcano.
 Use a dedicated cluster: these tests delete Grove workloads, cordon worker nodes,
 and restart the Grove operator.
 
@@ -61,7 +61,7 @@ From the `operator` directory:
 KUBECONFIG=/path/to/test.kubeconfig \
 GROVE_E2E_SCHEDULER=volcano \
 GROVE_E2E_WORKLOAD_IMAGE=registry:5001/busybox:latest \
-go test -tags=e2e ./e2e/tests -run '^Test_ZR' -count=1 -v -timeout=25m
+go test -tags=e2e ./e2e/tests -run '^(Test_GS13|Test_ZR)' -count=1 -v -timeout=25m
 ```
 
 Use `kai-scheduler` for KAI. The two `GROVE_E2E_*` overrides apply only to the
