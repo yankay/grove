@@ -321,7 +321,7 @@ func TestCheckAndRemovePodSchedulingGates(t *testing.T) {
 			}
 
 			cl := testutils.NewTestClientBuilder().WithObjects(objects...).Build()
-			r := &_resource{client: cl}
+			r := &_resource{client: cl, schedRegistry: testutils.NewDefaultFakeRegistry()}
 			ss := gateRemovalSnapshot([]*corev1.Pod{tc.pod}, twoEpochPGM())
 
 			skipped, err := r.checkAndRemovePodSchedulingGates(context.Background(), logr.Discard(), ss)
@@ -347,7 +347,7 @@ func TestCheckAndRemovePodSchedulingGates(t *testing.T) {
 			WithPodGroupPods(testCliqueName, pod.Name).
 			Build()
 		cl := testutils.NewTestClientBuilder().WithObjects(pod, podGang).Build()
-		r := &_resource{client: cl}
+		r := &_resource{client: cl, schedRegistry: testutils.NewDefaultFakeRegistry()}
 		ss := gateRemovalSnapshot([]*corev1.Pod{pod}, twoEpochPGM())
 
 		skipped, err := r.checkAndRemovePodSchedulingGates(context.Background(), logr.Discard(), ss)

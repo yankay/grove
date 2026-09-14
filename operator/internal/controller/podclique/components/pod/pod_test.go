@@ -123,6 +123,31 @@ func TestBuildResourceWithLPXBackend(t *testing.T) {
 	assert.Equal(t, "podclique", pclq.Annotations["example.com/source"])
 }
 
+func TestBuildResourcePreservesSchedulingGates(t *testing.T) {
+	const foreignGate = "example.com/admission-pending"
+	for _, gates := range [][]corev1.PodSchedulingGate{
+		{{Name: foreignGate}},
+		{{Name: foreignGate}, {Name: podGangSchedulingGate}},
+	} {
+		t.Run(fmt.Sprintf("template gates=%d", len(gates)), func(t *testing.T) {
+			pcs := testutils.NewPodCliqueSetBuilder("pcs", "default", "pcs-uid").
+				WithPodCliqueParameters("worker", 1, nil).Build()
+			pclq := testutils.NewPodCliqueBuilder(pcs.Name, pcs.UID, "worker", pcs.Namespace, 0).Build()
+			pclq.Spec.PodSpec.SchedulingGates = gates
+			scheme := runtime.NewScheme()
+			require.NoError(t, grovecorev1alpha1.AddToScheme(scheme))
+			resource := &_resource{scheme: scheme, schedRegistry: &testutils.FakeSchedulerRegistry{
+				Backends:       map[string]scheduler.Backend{"native": testutils.NewFakeSchedulerBackend("native")},
+				DefaultBackend: "native",
+			}}
+			pod := &corev1.Pod{}
+			require.NoError(t, resource.buildResource(pcs, pclq, "anchor", pod, 0))
+			assert.Equal(t, []corev1.PodSchedulingGate{{Name: foreignGate}, {Name: podGangSchedulingGate}}, pod.Spec.SchedulingGates)
+			assert.Equal(t, gates, pclq.Spec.PodSpec.SchedulingGates, "building a pod must not mutate the template")
+		})
+	}
+}
+
 // TestGetSelectorLabelsForPods_PCSGOwnedPodClique tests that getSelectorLabelsForPods
 // returns the correct selector labels for PCSG-owned PodCliques.
 func TestGetSelectorLabelsForPods_PCSGOwnedPodClique(t *testing.T) {

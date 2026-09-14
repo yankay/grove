@@ -52,6 +52,8 @@ type schedulerBackend struct {
 
 var _ scheduler.Backend = (*schedulerBackend)(nil)
 
+var _ scheduler.PodGangResourceBackend = (*schedulerBackend)(nil)
+
 const (
 	labelKeyQueueName    = "kai.scheduler/queue"
 	labelKeyNodePoolName = "kai.scheduler/node-pool"
@@ -110,13 +112,42 @@ func (b *schedulerBackend) SyncPodGang(ctx context.Context, podGang *groveschedu
 		}
 		return err
 	}
+	if !metav1.IsControlledBy(oldPodGroup, podGang) {
+		return fmt.Errorf("KAI PodGroup %s is not controlled by PodGang %s", key, client.ObjectKeyFromObject(podGang))
+	}
+	if !oldPodGroup.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("KAI PodGroup %s is terminating", key)
+	}
 
 	newPodGroup = b.inheritRuntimeManagedFields(oldPodGroup, newPodGroup)
 	if podGroupsEqual(oldPodGroup, newPodGroup) {
 		return nil
 	}
+	before := oldPodGroup.DeepCopy()
 	updatePodGroup(oldPodGroup, newPodGroup)
-	return b.client.Update(ctx, oldPodGroup)
+	return b.client.Patch(ctx, oldPodGroup, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+}
+
+func (b *schedulerBackend) PodGangResource() client.Object {
+	return &kaischedulingv2alpha2.PodGroup{}
+}
+
+func (b *schedulerBackend) IsPodGangSynced(ctx context.Context, podGang *groveschedulerv1alpha1.PodGang) (bool, error) {
+	if podGang == nil {
+		return false, fmt.Errorf("podGang is nil")
+	}
+	current := &kaischedulingv2alpha2.PodGroup{}
+	if err := b.client.Get(ctx, client.ObjectKeyFromObject(podGang), current); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	if !current.DeletionTimestamp.IsZero() || !metav1.IsControlledBy(current, podGang) {
+		return false, nil
+	}
+	desired, err := b.buildPodGroupForPodGang(ctx, podGang)
+	if err != nil {
+		return false, err
+	}
+	return podGroupsEqual(current, b.inheritRuntimeManagedFields(current, desired)), nil
 }
 
 // PreparePod adds KAI scheduler-specific configuration to the Pod.
