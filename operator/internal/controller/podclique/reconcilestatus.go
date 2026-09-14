@@ -60,6 +60,15 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 		return ctrlcommon.ReconcileWithErrors(fmt.Sprintf("failed to list pods for PodClique: %q", pclqObjectKey), err)
 	}
 
+	recovery, err := componentutils.GetGangRecoveryForChild(pcs, pclq.ObjectMeta)
+	if err != nil {
+		return ctrlcommon.ReconcileWithErrors("could not read gang recovery", err)
+	}
+	if recovery.Epoch != "" {
+		existingPods = lo.Filter(existingPods, func(pod *corev1.Pod, _ int) bool {
+			return pod.Annotations[componentutils.AnnotationPodRecoveryEpoch] == recovery.Epoch
+		})
+	}
 	podCategories := k8sutils.CategorizePodsByConditionType(logger, existingPods)
 
 	// mutate PodClique Status Replicas, ReadyReplicas, ScheduleGatedReplicas and UpdatedReplicas.
@@ -84,6 +93,9 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 			logger.Error(err, "could not resolve ProgressDeadline for PodClique, proceeding without a deadline")
 		}
 		mutateUpdateInProgressCondition(pclq, originalStatus, progressDeadline)
+		if recovery.Active() {
+			componentutils.DisarmGangRecoveryBreach(&pclq.Status.Conditions)
+		}
 		r.emitAllScheduledReplicasLostIfNeeded(pclq, originalStatus.ScheduledReplicas)
 	}
 

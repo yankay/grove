@@ -80,6 +80,13 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, logger logr.Logger, pc
 		logger.Error(err, "could not resolve ProgressDeadline for PodCliqueScalingGroup, proceeding without a deadline")
 	}
 	mutateUpdateInProgressCondition(pcsg, originalStatus, progressDeadline)
+	recovery, err := componentutils.GetGangRecoveryForChild(pcs, pcsg.ObjectMeta)
+	if err != nil {
+		return ctrlcommon.ReconcileWithErrors("could not read gang recovery", err)
+	}
+	if recovery.Active() {
+		componentutils.DisarmGangRecoveryBreach(&pcsg.Status.Conditions)
+	}
 	r.emitAllScheduledReplicasLostIfNeeded(pcsg, originalStatus.ScheduledReplicas)
 
 	if err = mutateSelector(pcs, pcsg); err != nil {

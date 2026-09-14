@@ -36,6 +36,7 @@ import (
 	"github.com/ai-dynamo/grove/operator/e2e/setup"
 	"github.com/ai-dynamo/grove/operator/e2e/testctx"
 	internalconstants "github.com/ai-dynamo/grove/operator/internal/constants"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
@@ -597,6 +598,132 @@ func Test_ZR7_PCSGWakeWaitsForLiveQuorum(t *testing.T) {
 	waitForPodCountAndReady(t, tc, 8)
 	assertRetainedPodLocation(t, append(podsForClique(t, tc, pcsName+"-0-worker"),
 		podsForClique(t, tc, pcsName+"-0-observers-0-observer")...), survivorLocations)
+}
+
+func Test_ZR8_RecoveryPreservesLatestScaleTargets(t *testing.T) {
+	const pcsName = "zero-recovery"
+	const holdFinalizer = "e2e.grove.io/hold-recovery"
+	ctx := context.Background()
+	tc, cleanup := prepareIdleWorkload(t, ctx, 6, pcsName, 0, func(pcs *grovecorev1alpha1.PodCliqueSet) {
+		idleClique(t, pcs, "guarded").Spec.Replicas = 2
+		idlePCSGConfig(t, pcs).Replicas = ptr.To(int32(1))
+	})
+	defer cleanup()
+	waitForPodCountAndReady(t, tc, 4)
+	worker := waitForPCLQ(t, ctx, tc, pcsName+"-0-worker")
+	guarded := waitForPCLQ(t, ctx, tc, pcsName+"-0-guarded")
+	group := &grovecorev1alpha1.PodCliqueScalingGroup{}
+	if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: pcsName + "-0-workers"}, group); err != nil {
+		t.Fatal(err)
+	}
+	updateScale(t, ctx, tc, guarded, 0)
+	updateScale(t, ctx, tc, worker, 3)
+	updateScale(t, ctx, tc, group, 2)
+	waitForPodCountAndReady(t, tc, 7)
+	waitForPCLQConditionReason(t, ctx, tc, worker.Name, apiconstants.ConditionReasonSufficientReadyPods)
+	oldPods, err := tc.ListPods()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldUIDs := sets.New[types.UID]()
+	for _, pod := range oldPods.Items {
+		oldUIDs.Insert(pod.UID)
+	}
+	held := podsForPCSGIndex(t, tc, "0")[0].DeepCopy()
+	if err := tc.Client.Patch(ctx, held, client.RawPatch(types.MergePatchType, []byte(
+		`{"metadata":{"finalizers":["`+holdFinalizer+`"]}}`))); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = client.IgnoreNotFound(tc.Client.Patch(ctx, held,
+			client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"finalizers":[]}}`))))
+	}()
+	nodes := tc.SetupAndCordonNodes(6)
+	defer tc.UncordonNodes(nodes)
+	for _, pod := range podsForClique(t, tc, worker.Name) {
+		if err := tc.Client.Delete(ctx, &pod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	draining := waitForGangRecovery(ctx, t, tc, pcsName, componentutils.GangRecoveryDraining)
+	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
+		current := &corev1.Pod{}
+		err := tc.Client.Get(ctx, client.ObjectKeyFromObject(held), current)
+		return err == nil && !current.DeletionTimestamp.IsZero(), err
+	}); err != nil {
+		t.Fatalf("recovery did not reach the held deletion: %v", err)
+	}
+	restartOperator(t, ctx, tc)
+	updateScale(t, ctx, tc, worker, 4)
+	assertScaleStatus(t, ctx, tc, worker, 4, false)
+	if err := tc.Client.Patch(ctx, held, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"finalizers":[]}}`))); err != nil {
+		t.Fatal(err)
+	}
+	recreating := waitForGangRecovery(ctx, t, tc, pcsName, componentutils.GangRecoveryRecreating)
+	if recreating.Epoch != draining.Epoch {
+		t.Fatal("restart changed the recovery epoch")
+	}
+	tc.UncordonNodes(nodes)
+	waitForPodCountAndReady(t, tc, 8)
+	waitForGangRecovery(ctx, t, tc, pcsName, componentutils.GangRecoveryComplete)
+	assertScaleStatus(t, ctx, tc, worker, 4, true)
+	assertScaleStatus(t, ctx, tc, guarded, 0, true)
+	assertScaleStatus(t, ctx, tc, group, 2, true)
+	for _, target := range []client.Object{worker, guarded, group} {
+		current := target.DeepCopyObject().(client.Object)
+		if err := tc.Client.Get(ctx, client.ObjectKeyFromObject(target), current); err != nil {
+			t.Fatal(err)
+		}
+		if current.GetUID() != target.GetUID() {
+			t.Fatalf("recovery replaced scale target %s", target.GetName())
+		}
+	}
+	pods, err := tc.ListPods()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pod := range pods.Items {
+		if oldUIDs.Has(pod.UID) || pod.Annotations[componentutils.AnnotationPodRecoveryEpoch] != draining.Epoch || !isPodReady(&pod) {
+			t.Fatalf("pod %s is not a Ready replacement from the current recovery", pod.Name)
+		}
+	}
+
+	// Re-arm after real health, then preserve an idle PCSG through another restart.
+	updateScale(t, ctx, tc, group, 0)
+	waitForPodCountAndReady(t, tc, 4)
+	nodes = tc.SetupAndCordonNodes(6)
+	for _, pod := range podsForClique(t, tc, worker.Name) {
+		if err := tc.Client.Delete(ctx, &pod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	second := waitForGangRecovery(ctx, t, tc, pcsName, componentutils.GangRecoveryRecreating)
+	if second.Epoch == draining.Epoch {
+		t.Fatal("a new regression did not start a new recovery")
+	}
+	restartOperator(t, ctx, tc)
+	assertScaleStatus(t, ctx, tc, group, 0, true)
+	assertScaleStatus(t, ctx, tc, worker, 4, false)
+	tc.UncordonNodes(nodes)
+	waitForPodCountAndReady(t, tc, 4)
+	waitForGangRecovery(ctx, t, tc, pcsName, componentutils.GangRecoveryComplete)
+}
+
+func waitForGangRecovery(ctx context.Context, t *testing.T, tc *testctx.TestContext, pcsName, phase string) componentutils.GangRecovery {
+	t.Helper()
+	var recovery componentutils.GangRecovery
+	if err := wait.PollUntilContextTimeout(ctx, tc.Interval, tc.Timeout, true, func(ctx context.Context) (bool, error) {
+		pcs := &grovecorev1alpha1.PodCliqueSet{}
+		if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: pcsName}, pcs); err != nil {
+			return false, err
+		}
+		var err error
+		recovery, err = componentutils.GetGangRecovery(pcs, 0)
+		return err == nil && recovery.Phase == phase, err
+	}); err != nil {
+		t.Fatalf("gang recovery did not reach %s: %v (last state: %+v)", phase, err, recovery)
+	}
+	return recovery
 }
 
 func prepareIdleWorkload(

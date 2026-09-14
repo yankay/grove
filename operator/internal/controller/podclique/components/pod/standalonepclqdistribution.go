@@ -275,7 +275,7 @@ func (r _resource) buildPerPodGangCreationTasks(logger logr.Logger, ss *syncSnap
 			return nil, err
 		}
 		for created := int32(0); created < countDeltaByPodGang[podGangName]; created++ {
-			tasks = append(tasks, r.createPodCreationTask(logger, ss.pcs, ss.pclq, podGangName, expectationsKey, taskIndex, availableIndices[taskIndex]))
+			tasks = append(tasks, r.createPodCreationTask(logger, ss, podGangName, expectationsKey, taskIndex, availableIndices[taskIndex]))
 			taskIndex++
 		}
 	}

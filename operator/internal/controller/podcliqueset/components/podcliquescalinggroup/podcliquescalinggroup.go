@@ -92,7 +92,6 @@ func (r _resource) Sync(ctx context.Context, logger logr.Logger, pcs *grovecorev
 	}
 
 	tasks := make([]utils.Task, 0, int(pcs.Spec.Replicas)*len(pcs.Spec.Template.PodCliqueScalingGroupConfigs))
-	existingPCSGNameSet := sets.New(existingPCSGNames...)
 	expectedPCSGNames := make([]string, 0, 20)
 	for pcsReplica := range pcs.Spec.Replicas {
 		for _, pcsgConfig := range pcs.Spec.Template.PodCliqueScalingGroupConfigs {
@@ -102,11 +101,10 @@ func (r _resource) Sync(ctx context.Context, logger logr.Logger, pcs *grovecorev
 				Name:      pcsgName,
 				Namespace: pcs.Namespace,
 			}
-			pcsgExists := existingPCSGNameSet.Has(pcsgName)
 			createOrUpdateTask := utils.Task{
 				Name: fmt.Sprintf("CreateOrUpdatePodCliqueScalingGroup-%s", pcsgObjectKey),
 				Fn: func(ctx context.Context) error {
-					return r.doCreateOrUpdate(ctx, logger, pcs, int(pcsReplica), pcsgObjectKey, pcsgConfig, pcsgExists)
+					return r.doCreateOrUpdate(ctx, logger, pcs, int(pcsReplica), pcsgObjectKey, pcsgConfig)
 				},
 			}
 			tasks = append(tasks, createOrUpdateTask)
@@ -163,12 +161,12 @@ func (r _resource) Delete(ctx context.Context, logger logr.Logger, pcsObjMeta me
 }
 
 // doCreateOrUpdate creates or updates a single PCSG resource.
-func (r _resource) doCreateOrUpdate(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet, pcsReplica int, pcsgObjectKey client.ObjectKey, pcsgConfig grovecorev1alpha1.PodCliqueScalingGroupConfig, pcsgExists bool) error {
+func (r _resource) doCreateOrUpdate(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet, pcsReplica int, pcsgObjectKey client.ObjectKey, pcsgConfig grovecorev1alpha1.PodCliqueScalingGroupConfig) error {
 	logger.Info("CreateOrUpdate PodCliqueScalingGroup", "objectKey", pcsgObjectKey)
 	pcsg := emptyPodCliqueScalingGroup(pcsgObjectKey)
 
 	if _, err := controllerutil.CreateOrPatch(ctx, r.client, pcsg, func() error {
-		if err := r.buildResource(pcsg, pcs, pcsReplica, pcsgConfig, pcsgExists); err != nil {
+		if err := r.buildResource(pcsg, pcs, pcsReplica, pcsgConfig); err != nil {
 			return groveerr.WrapError(err,
 				errCodeCreatePodCliqueScalingGroup,
 				component.OperationSync,
@@ -204,7 +202,7 @@ func (r _resource) doDelete(ctx context.Context, logger logr.Logger, pcs *grovec
 }
 
 // buildResource configures a PCSG with the desired state from the template.
-func (r _resource) buildResource(pcsg *grovecorev1alpha1.PodCliqueScalingGroup, pcs *grovecorev1alpha1.PodCliqueSet, pcsReplica int, pcsgConfig grovecorev1alpha1.PodCliqueScalingGroupConfig, pcsgExists bool) error {
+func (r _resource) buildResource(pcsg *grovecorev1alpha1.PodCliqueScalingGroup, pcs *grovecorev1alpha1.PodCliqueSet, pcsReplica int, pcsgConfig grovecorev1alpha1.PodCliqueScalingGroupConfig) error {
 	if err := controllerutil.SetControllerReference(pcs, pcsg, r.scheme); err != nil {
 		return groveerr.WrapError(err,
 			errSyncPodCliqueScalingGroup,
@@ -216,7 +214,7 @@ func (r _resource) buildResource(pcsg *grovecorev1alpha1.PodCliqueScalingGroup, 
 	controllerutil.AddFinalizer(pcsg, apiconstants.FinalizerPodCliqueScalingGroup)
 	// Only set replicas when creating the PCSG to allow external scaling (HPA, direct patching)
 	// Post-creation scaling must be done directly on the PCSG resource, not via PCS template
-	if !pcsgExists {
+	if pcsg.ResourceVersion == "" {
 		pcsg.Spec.Replicas = *pcsgConfig.Replicas
 	}
 	pcsg.Spec.MinAvailable = pcsgConfig.MinAvailable

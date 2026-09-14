@@ -22,12 +22,12 @@ import (
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	apiconstants "github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
 
 	"github.com/go-logr/logr"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -123,12 +123,13 @@ func TestGetMinAvailableBreachedPCSGInfoUsesPersistentReason(t *testing.T) {
 	}
 }
 
-func TestCreatePCSReplicaDeleteTaskResetsPCSGState(t *testing.T) {
+func TestCreatePCSReplicaRecoveryTaskRetainsScaleTargets(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, grovecorev1alpha1.AddToScheme(scheme))
 
 	pcs := &grovecorev1alpha1.PodCliqueSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "pcs", Namespace: "default"},
+		Spec:       grovecorev1alpha1.PodCliqueSetSpec{Replicas: 1},
 	}
 	replicaLabels := lo.Assign(
 		apicommon.GetDefaultLabelsForPodCliqueSetManagedResources(pcs.Name),
@@ -154,6 +155,7 @@ func TestCreatePCSReplicaDeleteTaskResetsPCSGState(t *testing.T) {
 	}
 	pclq := &grovecorev1alpha1.PodClique{
 		ObjectMeta: metav1.ObjectMeta{Name: "pcs-0-sg-a-pc-x", Namespace: "default", Labels: replicaLabels},
+		Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: 3},
 	}
 
 	cl := fake.NewClientBuilder().
@@ -163,20 +165,27 @@ func TestCreatePCSReplicaDeleteTaskResetsPCSGState(t *testing.T) {
 		Build()
 	r := _resource{client: cl, eventRecorder: record.NewFakeRecorder(10)}
 
-	task := r.createPCSReplicaDeleteTask(logr.Discard(), pcs, 0, "gang regression")
+	task := r.createPCSReplicaRecoveryTask(logr.Discard(), pcs, 0, "gang regression")
 	require.NoError(t, task.Fn(context.Background()))
 
 	pclqList := &grovecorev1alpha1.PodCliqueList{}
 	require.NoError(t, cl.List(context.Background(), pclqList, client.InNamespace("default"), client.MatchingLabels(replicaLabels)))
-	assert.Empty(t, pclqList.Items)
+	require.Len(t, pclqList.Items, 1)
+	assert.Equal(t, int32(3), pclqList.Items[0].Spec.Replicas)
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(pcs), pcs))
+	recovery, err := componentutils.GetGangRecovery(pcs, 0)
+	require.NoError(t, err)
+	assert.Equal(t, componentutils.GangRecoveryDraining, recovery.Phase)
+	assert.NotEmpty(t, recovery.Epoch)
+	require.NoError(t, task.Fn(context.Background()))
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(pcs), pcs))
+	repeated, err := componentutils.GetGangRecovery(pcs, 0)
+	require.NoError(t, err)
+	assert.Equal(t, recovery, repeated)
 
 	for _, name := range []string{sgA.Name, sgB.Name} {
 		got := &grovecorev1alpha1.PodCliqueScalingGroup{}
 		require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Name: name, Namespace: "default"}, got))
-		condition := meta.FindStatusCondition(got.Status.Conditions, apiconstants.ConditionTypeMinAvailableBreached)
-		require.NotNil(t, condition)
-		assert.Equal(t, metav1.ConditionTrue, condition.Status)
-		assert.Equal(t, apiconstants.ConditionReasonInitialScheduling, condition.Reason)
-		assert.Equal(t, got.Generation, condition.ObservedGeneration)
+		assert.Equal(t, int32(1), got.Spec.Replicas)
 	}
 }

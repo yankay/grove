@@ -25,6 +25,9 @@ import (
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
+	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler/lpx"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
@@ -95,7 +98,11 @@ func TestBuildResourceWithLPXBackend(t *testing.T) {
 	pclq.Annotations = map[string]string{
 		"example.com/source": "podclique",
 		constants.AnnotationPodCliqueScalingGroupPodIndexOffset: "0",
+		componentutils.AnnotationPodRecoveryEpoch:               "untrusted-template-value",
 	}
+	require.NoError(t, componentutils.SetGangRecovery(pcs, 0, componentutils.GangRecovery{
+		Epoch: "current-recovery", Phase: componentutils.GangRecoveryRecreating,
+	}))
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, grovecorev1alpha1.AddToScheme(scheme))
@@ -124,9 +131,19 @@ func TestBuildResourceWithLPXBackend(t *testing.T) {
 	assert.Equal(t, claimName, *pod.Spec.ResourceClaims[0].ResourceClaimName)
 	assert.Equal(t, "podclique", pod.Annotations["example.com/source"])
 	assert.NotContains(t, pod.Annotations, constants.AnnotationPodCliqueScalingGroupPodIndexOffset)
+	assert.Equal(t, "current-recovery", pod.Annotations[componentutils.AnnotationPodRecoveryEpoch])
 
 	pod.Annotations["example.com/source"] = "pod"
 	assert.Equal(t, "podclique", pclq.Annotations["example.com/source"])
+
+	require.NoError(t, componentutils.SetGangRecovery(pcs, 0, componentutils.GangRecovery{
+		Epoch: "next-recovery", Phase: componentutils.GangRecoveryDraining,
+	}))
+	blockedPod := &corev1.Pod{}
+	testutils.AssertGroveError(t, &groveerr.GroveError{
+		Code: groveerr.ErrCodeRequeueAfter, Operation: component.OperationSync,
+	}, resource.buildResource(pcs, pclq, podGangName, blockedPod, 0))
+	assert.Empty(t, blockedPod.GenerateName, "a newer PCS snapshot must not create current-epoch pods during drain")
 }
 
 func TestBuildResourcePreservesSchedulingGates(t *testing.T) {
