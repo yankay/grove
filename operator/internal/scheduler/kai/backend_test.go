@@ -22,6 +22,7 @@ import (
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
+	schedulertest "github.com/ai-dynamo/grove/operator/test/utils/scheduler"
 
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
 	kaischedulingv2alpha2 "github.com/kai-scheduler/KAI-scheduler/pkg/apis/scheduling/v2alpha2"
@@ -129,6 +130,7 @@ func TestBackend_SyncPodGang_CreateAndUpdate(t *testing.T) {
 		Spec:       grovecorev1alpha1.ClusterTopologyBindingSpec{Levels: []grovecorev1alpha1.TopologyLevel{{Key: "zone"}}},
 	}
 	cl := testutils.NewTestClientBuilder().
+		WithScheme(schedulertest.NewKAIScheme(t)).
 		WithObjects(pcs, ct, podGang).
 		Build()
 	recorder := record.NewFakeRecorder(10)
@@ -321,7 +323,7 @@ func TestBackend_SyncPodGang_RestoresStandaloneFloor(t *testing.T) {
 	router := groveschedulerv1alpha1.PodGroup{Name: "router", MinReplicas: 1,
 		PodReferences: []groveschedulerv1alpha1.NamespacedName{{Name: "router-0", Namespace: "default"}}}
 	podGang.Spec.PodGroups = []groveschedulerv1alpha1.PodGroup{router}
-	cl := testutils.NewTestClientBuilder().WithObjects(pcs, podGang).Build()
+	cl := schedulertest.NewKAIClient(t, pcs, podGang)
 	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10),
 		configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
 	require.NoError(t, b.Init(cl))
@@ -372,7 +374,7 @@ func TestBackend_SyncPodGang_SkipsEmptyTopologyConstraintGroups(t *testing.T) {
 		{Name: "worker", MinReplicas: 1},
 	}
 
-	cl := testutils.NewTestClientBuilder().WithObjects(pcs, podGang).Build()
+	cl := schedulertest.NewKAIClient(t, pcs, podGang)
 	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
 	require.NoError(t, b.Init(cl))
 
@@ -398,7 +400,7 @@ func TestBackend_SyncPodGangSetsOwnerReferenceAndSkipAnnotation(t *testing.T) {
 		Build()
 	setPodCliqueSetControllerOwner(podGang, pcs)
 
-	cl := testutils.NewTestClientBuilder().WithObjects(pcs, podGang).Build()
+	cl := schedulertest.NewKAIClient(t, pcs, podGang)
 	recorder := record.NewFakeRecorder(10)
 	profile := configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai}
 	b := New(cl, cl.Scheme(), recorder, profile)
@@ -431,7 +433,7 @@ func TestBackend_SyncPodGang_UsesUniquePodCliqueTemplateQueue(t *testing.T) {
 		Build()
 	setPodCliqueSetControllerOwner(podGang, pcs)
 
-	cl := testutils.NewTestClientBuilder().WithObjects(pcs, podGang).Build()
+	cl := schedulertest.NewKAIClient(t, pcs, podGang)
 	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
 	require.NoError(t, b.Init(cl))
 
@@ -599,7 +601,7 @@ func TestBackend_SyncPodGang_QueueResolutionFailuresDoNotCreatePodGroup(t *testi
 				}
 			}
 
-			cl := testutils.NewTestClientBuilder().WithObjects(objects...).Build()
+			cl := schedulertest.NewKAIClient(t, objects...)
 			b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
 			require.NoError(t, b.Init(cl))
 

@@ -194,7 +194,9 @@ func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grov
 		)
 	}
 	pod.Spec = *pclq.Spec.PodSpec.DeepCopy()
-	pod.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: podGangSchedulingGate}}
+	if !hasPodGangSchedulingGate(pod) {
+		pod.Spec.SchedulingGates = append(pod.Spec.SchedulingGates, corev1.PodSchedulingGate{Name: podGangSchedulingGate})
+	}
 
 	// Resolve scheduler: from template or default backend; then prepare pod (schedulerName, annotations, etc.)
 	schedulerName := pclq.Spec.PodSpec.SchedulerName

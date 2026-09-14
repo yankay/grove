@@ -396,10 +396,19 @@ func (r _resource) checkAndRemovePodSchedulingGates(ctx context.Context, logger 
 	if err != nil {
 		return nil, err
 	}
+	backendSynced, err := r.resolveBackendSynced(ctx, podGangByName)
+	if err != nil {
+		return nil, err
+	}
+	quorumScheduled, err := r.isPCSGMinimumScheduled(ctx, ss)
+	if err != nil {
+		return nil, groveerr.WrapError(err, errCodeGetPodGang, component.OperationSync, "failed to resolve current PCSG scheduling quorum")
+	}
 
 	tasks := make([]utils.Task, 0, len(gatedPods))
 	for i, pod := range gatedPods {
-		if !canRemoveSchedulingGate(logger, pod, ss.pclq.Name, podGangByName, dependencySatisfiedByEpoch) {
+		if !quorumScheduled || !backendSynced[pod.Labels[apicommon.LabelPodGang]] ||
+			!canRemoveSchedulingGate(logger, pod, ss.pclq.Name, podGangByName, dependencySatisfiedByEpoch) {
 			skippedScheduleGatedPods = append(skippedScheduleGatedPods, pod.Name)
 			continue
 		}
@@ -519,6 +528,9 @@ func canRemoveSchedulingGate(logger logr.Logger, pod *corev1.Pod, pclqName strin
 	podGang := podGangByName[podGangName]
 	if podGang == nil {
 		logger.Info("PodGang not found yet, skipping gate removal", "podObjectKey", podObjectKey, "podGangName", podGangName)
+		return false
+	}
+	if !podGang.DeletionTimestamp.IsZero() {
 		return false
 	}
 	if !isPodInPodReferences(podGang, pclqName, pod.Name) {
