@@ -28,9 +28,42 @@ import (
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+type schedulingGateSnapshot struct {
+	podGangByName              map[string]*groveschedulerv1alpha1.PodGang
+	dependencySatisfiedByEpoch map[string]bool
+	backendSyncedByPodGang     map[string]bool
+	pcsgMinimumScheduled       bool
+}
+
+func (r _resource) prepareSchedulingGateSnapshot(ctx context.Context, ss *syncSnapshot, gatedPods []*corev1.Pod) (*schedulingGateSnapshot, error) {
+	podGangs, err := r.fetchPodGangsForGatedPods(ctx, gatedPods, ss.pclq.Namespace)
+	if err != nil {
+		return nil, err
+	}
+	dependencies, err := r.resolveDependencySatisfiedByEpoch(ctx, ss)
+	if err != nil {
+		return nil, err
+	}
+	backendSynced, err := r.resolveBackendSynced(ctx, podGangs)
+	if err != nil {
+		return nil, err
+	}
+	quorumScheduled, err := r.isPCSGMinimumScheduled(ctx, ss)
+	if err != nil {
+		return nil, groveerr.WrapError(err, errCodeGetPodGang, component.OperationSync, "failed to resolve current PCSG scheduling quorum")
+	}
+	return &schedulingGateSnapshot{
+		podGangByName:              podGangs,
+		dependencySatisfiedByEpoch: dependencies,
+		backendSyncedByPodGang:     backendSynced,
+		pcsgMinimumScheduled:       quorumScheduled,
+	}, nil
+}
 
 // resolveBackendSynced keeps new pods gated while a backend still has the old membership policy.
 // Historical PodGang conditions cannot acknowledge a native PodGroup spec update.
