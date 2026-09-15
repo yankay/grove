@@ -167,7 +167,8 @@ func workloadItemTreeForPodGang(podGang *groveschedulerv1alpha1.PodGang, fallbac
 				Policy: &workloadbuilder.SchedulingPolicy{
 					Gang: &workloadbuilder.GangSchedulingPolicy{MinCount: ptr.To(int32(len(children)))},
 				},
-				Constraints: groupConstraints,
+				Constraints:       groupConstraints,
+				PriorityClassName: podGang.Spec.PriorityClassName,
 			},
 			Children: children,
 		})
@@ -269,8 +270,8 @@ func workloadHierarchyLabels(podGang *groveschedulerv1alpha1.PodGang, base map[s
 //
 // Workload templates cannot be added or removed after creation. When the
 // desired structure differs from the persisted one, the whole generated
-// hierarchy is deleted and recreated; pods stay gated until the hierarchy for
-// the current PodGang generation is ready.
+// hierarchy is deleted and recreated. Pod membership is set before Pod creation;
+// the scheduler waits for the referenced groups to become available.
 func (b *schedulerBackend) syncWorkloadHierarchy(ctx context.Context, podGang *groveschedulerv1alpha1.PodGang) error {
 	fallbackMinCounts, err := b.persistedLeafMinCounts(ctx, podGang)
 	if err != nil {
@@ -416,7 +417,7 @@ func (b *schedulerBackend) syncWorkload(ctx context.Context, podGang *grovesched
 	}
 
 	// Structure changed: templates cannot be added or removed in place, so
-	// rebuild the hierarchy before pods of the new generation are ungated.
+	// rebuild the hierarchy. Runtime group status is owned by the scheduler.
 	if err := b.client.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
 		return nil, fmt.Errorf("failed to delete outdated Workload %s/%s: %w", existing.Namespace, existing.Name, err)
 	}
@@ -440,7 +441,7 @@ func (b *schedulerBackend) updateMutableWorkloadFields(ctx context.Context, exis
 	if !changed {
 		return nil
 	}
-	if err := b.client.Patch(ctx, existing, client.MergeFrom(before)); err != nil {
+	if err := b.client.Patch(ctx, existing, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		return fmt.Errorf("failed to patch Workload %s/%s gang minCount: %w", existing.Namespace, existing.Name, err)
 	}
 	return nil
@@ -662,7 +663,7 @@ func (b *schedulerBackend) syncLeafPodGroups(ctx context.Context, podGang *grove
 		}
 		before := existing.DeepCopy()
 		gang.MinCount = groveGroup.MinReplicas
-		if err := b.client.Patch(ctx, existing, client.MergeFrom(before)); err != nil {
+		if err := b.client.Patch(ctx, existing, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return fmt.Errorf("failed to patch PodGroup %s/%s gang minCount: %w", podGang.Namespace, groveGroup.Name, err)
 		}
 	}

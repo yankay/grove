@@ -18,6 +18,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
@@ -29,6 +30,7 @@ import (
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -38,6 +40,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 const (
@@ -56,10 +59,11 @@ func newWorkloadTestScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-func newGangBackend(t *testing.T, existingObjects ...client.Object) (*schedulerBackend, client.Client) {
+func newGangBackend(t *testing.T, existingObjects ...client.Object) (*schedulerBackend, client.WithWatch) {
 	t.Helper()
 	scheme := newWorkloadTestScheme(t)
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existingObjects...).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existingObjects...).
+		WithStatusSubresource(&groveschedulerv1alpha1.PodGang{}, &schedulingv1beta1.PodGroup{}, &schedulingv1alpha3.CompositePodGroup{}).Build()
 	backend := &schedulerBackend{
 		client:                cl,
 		scheme:                scheme,
@@ -783,9 +787,12 @@ func TestSyncPodGang_UsesDNSLabelTemplateNames(t *testing.T) {
 }
 
 func TestSyncPodGang_PriorityClassChangeRebuildsHierarchy(t *testing.T) {
-	podGang := newTestPodGang(func(podGang *groveschedulerv1alpha1.PodGang) {
-		podGang.Spec.PriorityClassName = "low-priority"
-	})
+	podGang := newTestPodGang(
+		withTopologyGroup("tcg-a", []string{"test-pcs-0-prefill"}, ""),
+		func(podGang *groveschedulerv1alpha1.PodGang) {
+			podGang.Spec.PriorityClassName = "low-priority"
+		},
+	)
 	backend, cl := newGangBackend(t, podGang)
 	ctx := context.Background()
 	require.NoError(t, backend.SyncPodGang(ctx, podGang))
@@ -797,6 +804,8 @@ func TestSyncPodGang_PriorityClassChangeRebuildsHierarchy(t *testing.T) {
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: testPodGangName}, workload))
 	root := workload.Spec.CompositePodGroupTemplates[0]
 	assert.Equal(t, "high-priority", root.PriorityClassName)
+	require.Len(t, root.CompositePodGroupTemplates, 1)
+	assert.Equal(t, "high-priority", root.CompositePodGroupTemplates[0].PriorityClassName)
 	for _, leaf := range root.PodGroupTemplates {
 		assert.Equal(t, "high-priority", leaf.PriorityClassName)
 	}
@@ -804,6 +813,10 @@ func TestSyncPodGang_PriorityClassChangeRebuildsHierarchy(t *testing.T) {
 	rootComposite := &schedulingv1alpha3.CompositePodGroup{}
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: testPodGangName}, rootComposite))
 	assert.Equal(t, "high-priority", rootComposite.Spec.PriorityClassName)
+
+	childComposite := &schedulingv1alpha3.CompositePodGroup{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: testPodGangName + "-tcg-a"}, childComposite))
+	assert.Equal(t, "high-priority", childComposite.Spec.PriorityClassName)
 
 	prefill := &schedulingv1beta1.PodGroup{}
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "test-pcs-0-prefill"}, prefill))
@@ -920,4 +933,85 @@ func TestSyncPodGang_RecoversDeletedWorkloadAfterMinReplicasReleased(t *testing.
 	require.NotNil(t, decode)
 	require.NotNil(t, decode.SchedulingPolicy.Gang)
 	assert.Equal(t, int32(1), decode.SchedulingPolicy.Gang.MinCount)
+}
+
+func TestSyncPodGang_PreservesSchedulerAndPodGangStatus(t *testing.T) {
+	podGang := newTestPodGang(withTopologyGroup("tcg-a", []string{"test-pcs-0-prefill"}, ""))
+	transitionTime := metav1.NewTime(time.Unix(100, 0))
+	podGang.Status.Conditions = []metav1.Condition{{
+		Type: string(groveschedulerv1alpha1.PodGangConditionTypeScheduled), Status: metav1.ConditionFalse,
+		Reason: "PodsPending", LastTransitionTime: transitionTime,
+	}}
+	backend, cl := newGangBackend(t, podGang)
+	ctx := t.Context()
+	require.NoError(t, backend.SyncPodGang(ctx, podGang))
+	leaf := &schedulingv1beta1.PodGroup{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "test-pcs-0-prefill"}, leaf))
+	leaf.Status.Conditions = []metav1.Condition{{
+		Type: schedulingv1beta1.PodGroupInitiallyScheduled, Status: metav1.ConditionTrue,
+		Reason: "Scheduled", LastTransitionTime: transitionTime,
+	}}
+	require.NoError(t, cl.Status().Update(ctx, leaf))
+	leafStatus := leaf.Status.DeepCopy()
+	composites := &schedulingv1alpha3.CompositePodGroupList{}
+	require.NoError(t, cl.List(ctx, composites, client.InNamespace(testNamespace)))
+	require.Len(t, composites.Items, 2)
+	for i := range composites.Items {
+		composite := &composites.Items[i]
+		composite.Status.Conditions = []metav1.Condition{{
+			Type: "CompositePodGroupInitiallyScheduled", Status: metav1.ConditionTrue,
+			Reason: "Scheduled", LastTransitionTime: transitionTime,
+		}}
+		require.NoError(t, cl.Status().Update(ctx, composite))
+	}
+
+	podGang.Spec.PodGroups[0].MinReplicas = 3
+	require.NoError(t, backend.SyncPodGang(ctx, podGang))
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(leaf), leaf))
+	assert.Equal(t, int32(3), leaf.Spec.SchedulingPolicy.Gang.MinCount)
+	assert.Equal(t, *leafStatus, leaf.Status)
+	for i := range composites.Items {
+		existing := &schedulingv1alpha3.CompositePodGroup{}
+		require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(&composites.Items[i]), existing))
+		assert.Equal(t, composites.Items[i].Status, existing.Status)
+	}
+	persistedGang := &groveschedulerv1alpha1.PodGang{}
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(podGang), persistedGang))
+	assert.Equal(t, podGang.Status, persistedGang.Status)
+	assert.True(t, meta.IsStatusConditionFalse(persistedGang.Status.Conditions, string(groveschedulerv1alpha1.PodGangConditionTypeScheduled)),
+		"upstream initial-placement success must not overwrite Grove's live Pod-derived status")
+}
+
+func TestSyncPodGang_RequeuesConcurrentSchedulingUpdates(t *testing.T) {
+	for _, kind := range []string{"Workload", "PodGroup"} {
+		t.Run(kind, func(t *testing.T) {
+			podGang := newTestPodGang()
+			backend, cl := newGangBackend(t, podGang)
+			ctx := t.Context()
+			require.NoError(t, backend.SyncPodGang(ctx, podGang))
+			conflicts := 0
+			backend.client = interceptor.NewClient(cl, interceptor.Funcs{
+				Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					gvk, err := cl.GroupVersionKindFor(obj)
+					require.NoError(t, err)
+					if gvk.Kind == kind && conflicts == 0 {
+						current := obj.DeepCopyObject().(client.Object)
+						require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(obj), current))
+						current.SetAnnotations(map[string]string{"scheduler.example/observed": "true"})
+						require.NoError(t, cl.Update(ctx, current))
+						conflicts++
+					}
+					return cl.Patch(ctx, obj, patch, opts...)
+				},
+			})
+			podGang.Spec.PodGroups[0].MinReplicas = 3
+			err := backend.SyncPodGang(ctx, podGang)
+			require.True(t, apierrors.IsConflict(err), "conflicts must reach the controller for requeue, got %v", err)
+			require.Equal(t, 1, conflicts)
+			require.NoError(t, backend.SyncPodGang(ctx, podGang))
+			leaf := &schedulingv1beta1.PodGroup{}
+			require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "test-pcs-0-prefill"}, leaf))
+			assert.Equal(t, int32(3), leaf.Spec.SchedulingPolicy.Gang.MinCount)
+		})
+	}
 }

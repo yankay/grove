@@ -291,3 +291,76 @@ Currently the following schedulers support gang scheduling of `PodGang`s created
   - Disable KAI stale-gang eviction with
     `--set-string scheduler.args.default-staleness-grace-period=-1`. KAI's default eviction can terminate a
     partially scheduled gang before Grove's controller-owned termination delay.
+- Kubernetes `default-scheduler`, with the opt-in Workload-Aware Scheduling configuration below.
+
+### Default-scheduler hierarchical gang scheduling
+
+Grove's `default-scheduler` profile leaves `config.gangScheduling` disabled by default. Ordinary default-scheduler operation retains Grove's Kubernetes >= 1.36 baseline. Enabling hierarchical gang scheduling requires Kubernetes >= 1.37 and the following feature gates:
+
+| Component | Required feature gates |
+| --- | --- |
+| kube-apiserver | `GenericWorkload`, `CompositePodGroup`, `TopologyAwareWorkloadScheduling` |
+| kube-scheduler | `GenericWorkload`, `CompositePodGroup`, `TopologyAwareWorkloadScheduling` |
+| kube-controller-manager | `GenericWorkload` |
+
+The API server must serve `workloads` and `podgroups` in `scheduling.k8s.io/v1beta1`, and `compositepodgroups` in `scheduling.k8s.io/v1alpha3`. These are built-in Kubernetes APIs, not CRDs installed by the Grove chart.
+
+Enable the backend with these Helm values:
+
+```yaml
+config:
+  scheduler:
+    defaultProfileName: default-scheduler
+    profiles:
+      - name: default-scheduler
+        config:
+          gangScheduling: true
+```
+
+Apply the values through `helm upgrade`; do not edit the immutable operator ConfigMap:
+
+```bash
+helm upgrade -i grove oci://ghcr.io/ai-dynamo/grove/grove-charts \
+  --version <version> -f values.yaml
+```
+
+The `profiles` list replaces the chart default list. Include any other scheduler profiles used by your workloads.
+
+At startup, Grove uses an uncached client to list all three scheduling resources. The LIST probes share a 30-second context deadline; REST discovery follows the provided client's discovery timeouts. Missing APIs, denied access, or a failed request prevent the operator from starting. There is no fallback to independent Pod scheduling. Restore the prerequisites or set `gangScheduling: false` in the profile and apply another Helm upgrade. The chart grants access to these APIs only while this option is enabled.
+
+API availability verifies API-server support, not the configuration of other control-plane components. The cluster administrator must enable the required kube-scheduler and kube-controller-manager feature gates before enabling the Grove option.
+
+#### Scheduling objects and lifecycle
+
+Each Grove `PodGang` produces one `Workload`, a root `CompositePodGroup`, and a leaf `PodGroup` for each Grove PodGroup. Topology subgroups produce child `CompositePodGroup`s. Required topology constraints apply at their corresponding level, and all runtime groups use the PodGang's priority class.
+
+Grove creates Pod membership through the immutable `spec.schedulingGroup.podGroupName` field before creating the Pod. Pods that predate feature enablement cannot be adopted in place: recreate them through a Grove rollout. Enabling the operator option alone does not migrate existing Pods.
+
+Pod-count changes update leaf gang minimums. PCSG scale-out creates new PodGang hierarchies; scale-in removes the corresponding hierarchies through owner references. Grove watches generated resources and recreates missing objects. A released `MinReplicas=0` retains the last positive upstream minimum from the Workload or a surviving leaf PodGroup. If both copies are lost, reconciliation fails closed instead of guessing a minimum.
+
+#### Status and troubleshooting
+
+Grove's PodCliqueSet reconciler continues to derive `Initialized`, `Scheduled`, and `Ready` from member Pod creation, association, scheduling, and per-clique `MinAvailable`. The backend does not translate upstream group conditions into `PodGang.status`.
+
+`Workload` has no status. Scheduler-specific diagnostics remain on runtime groups and Pods. Their `PodGroupInitiallyScheduled` and `CompositePodGroupInitiallyScheduled` conditions record initial placement, not current workload readiness.
+
+Inspect a PodGang's hierarchy using its `grove.io/podgang` label:
+
+```bash
+kubectl get podgangs.scheduler.grove.io <podgang> -n <namespace> -o yaml
+kubectl get workloads.scheduling.k8s.io,compositepodgroups.scheduling.k8s.io,podgroups.scheduling.k8s.io \
+  -n <namespace> -l grove.io/podgang=<podgang> -o yaml
+kubectl get pods -n <namespace> -l grove.io/podgang=<podgang> -o yaml
+kubectl describe podgangs.scheduler.grove.io <podgang> -n <namespace>
+```
+
+Backend synchronization failures emit `KubeBackendSyncFailed` warning events on the PodGang. For pending Pods, inspect scheduler events and available capacity as well as group conditions.
+
+#### Limitations
+
+- Initial `MinReplicas=0` is unsupported because WAS requires `minCount >= 1`.
+- Each generated template list supports at most eight entries, with hierarchy depth limited to four.
+- Preferred topology constraints are rejected; a generated group supports one required topology key.
+- Changing immutable hierarchy structure requires replacing generated scheduling objects. In-flight hierarchy replacement still requires further end-to-end validation.
+
+See [GREP-531](https://github.com/ai-dynamo/grove/pull/605) for the design and the [WAS test instructions](../operator/e2e/README.md#workload-aware-scheduling-default-scheduler-gang-tests) for local validation.
