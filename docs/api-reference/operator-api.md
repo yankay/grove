@@ -358,7 +358,8 @@ _Appears in:_
 
 PodCliqueScalingGroupSpec is the specification of the PodCliqueScalingGroup.
 GREP-0677: replicas must be 0 (intentional idle state) or at least minAvailable; positive
-below-quorum values are rejected. This runs on create, update, and the scale subresource.
+below-quorum values are rejected. Legacy objects may update unrelated fields while
+replicas and minAvailable stay unchanged. This also validates the scale subresource.
 
 
 
@@ -571,7 +572,8 @@ _Appears in:_
 
 PodCliqueSpec defines the specification of a PodClique.
 GREP-0677: replicas must be 0 (intentional idle state) or at least minAvailable; positive
-below-quorum values are rejected. This runs on create, update, and the scale subresource.
+below-quorum values are rejected. Legacy objects may update unrelated fields while
+replicas and minAvailable stay unchanged. This also validates the scale subresource.
 
 
 

@@ -9375,8 +9375,11 @@ spec:
                           x-kubernetes-validations:
                           - message: spec.replicas must be 0 (idle) or greater than
                               or equal to spec.minAvailable
+                            optionalOldSelf: true
                             rule: self.replicas == 0 || !has(self.minAvailable) ||
-                              self.replicas >= self.minAvailable
+                              self.replicas >= self.minAvailable || (oldSelf.hasValue()
+                              && self.replicas == oldSelf.value().replicas && has(oldSelf.value().minAvailable)
+                              && self.minAvailable == oldSelf.value().minAvailable)
                         topologyConstraint:
                           description: |-
                             TopologyConstraint defines topology placement requirements for PodClique.

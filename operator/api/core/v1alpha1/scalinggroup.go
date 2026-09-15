@@ -56,8 +56,9 @@ type PodCliqueScalingGroupList struct {
 
 // PodCliqueScalingGroupSpec is the specification of the PodCliqueScalingGroup.
 // GREP-0677: replicas must be 0 (intentional idle state) or at least minAvailable; positive
-// below-quorum values are rejected. This runs on create, update, and the scale subresource.
-// +kubebuilder:validation:XValidation:rule="self.replicas == 0 || !has(self.minAvailable) || self.replicas >= self.minAvailable",message="spec.replicas must be 0 (idle) or greater than or equal to spec.minAvailable"
+// below-quorum values are rejected. Legacy objects may update unrelated fields while
+// replicas and minAvailable stay unchanged. This also validates the scale subresource.
+// +kubebuilder:validation:XValidation:rule="self.replicas == 0 || !has(self.minAvailable) || self.replicas >= self.minAvailable || (oldSelf.hasValue() && self.replicas == oldSelf.value().replicas && has(oldSelf.value().minAvailable) && self.minAvailable == oldSelf.value().minAvailable)",message="spec.replicas must be 0 (idle) or greater than or equal to spec.minAvailable",optionalOldSelf=true
 type PodCliqueScalingGroupSpec struct {
 	// Replicas is the desired number of replicas for the PodCliqueScalingGroup.
 	// If not specified, it defaults to 1.

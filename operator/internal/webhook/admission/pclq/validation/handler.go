@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-const denialMessage = "spec.replicas cannot be changed on a PodClique owned by a PodCliqueScalingGroup; scale the owning PodCliqueScalingGroup instead"
+const denialMessage = "spec.replicas cannot be scaled to zero on a PodClique owned by a PodCliqueScalingGroup; scale the owning PodCliqueScalingGroup to zero instead"
 
 // Handler validates PodClique updates, including the scale subresource.
 type Handler struct {
@@ -49,7 +49,7 @@ func NewHandler(mgr manager.Manager) *Handler {
 	}
 }
 
-// Handle rejects independent scaling of PodCliques owned by a PodCliqueScalingGroup.
+// Handle rejects independent scale-to-zero for PodCliques owned by a PodCliqueScalingGroup.
 func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	if req.Operation != admissionv1.Update {
 		return admission.Allowed("operation does not update a PodClique")
@@ -69,7 +69,7 @@ func (h *Handler) validatePodCliqueUpdate(req admission.Request) admission.Respo
 	if err := json.Unmarshal(req.Object.Raw, newPCLQ); err != nil {
 		return admission.Errored(http.StatusBadRequest, fmt.Errorf("decoding new PodClique: %w", err))
 	}
-	if oldPCLQ.Spec.Replicas != newPCLQ.Spec.Replicas &&
+	if newPCLQ.Spec.Replicas == 0 && oldPCLQ.Spec.Replicas != newPCLQ.Spec.Replicas &&
 		(isScalingGroupOwned(oldPCLQ) || isScalingGroupOwned(newPCLQ)) {
 		return admission.Denied(denialMessage)
 	}
@@ -91,7 +91,10 @@ func (h *Handler) validateScaleUpdate(ctx context.Context, req admission.Request
 		return admission.Allowed("standalone PodClique scale update is valid")
 	}
 	if scale.Spec.Replicas != pclq.Spec.Replicas {
-		return admission.Denied(denialMessage)
+		if scale.Spec.Replicas == 0 {
+			return admission.Denied(denialMessage)
+		}
+		return admission.Allowed("PodClique scale update is valid")
 	}
 	return admission.Allowed("PodClique scale update does not change replicas")
 }
