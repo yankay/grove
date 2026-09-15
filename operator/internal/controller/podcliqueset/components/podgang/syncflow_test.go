@@ -52,6 +52,73 @@ var defaultFakeSchedulerRegistry = &testutils.FakeSchedulerRegistry{
 	DefaultBackend: "default-scheduler",
 }
 
+func TestPCSGMemberRuntimeReplicas(t *testing.T) {
+	const memberName = "test-pcs-0-sg-0-worker"
+	for _, test := range []struct {
+		name     string
+		role     grovecorev1alpha1.PodGangEntryRole
+		replicas *int32
+		want     int32
+	}{
+		{name: "anchor scale-out", role: grovecorev1alpha1.PodGangEntryRoleAnchor, replicas: ptr.To(int32(4)), want: 4},
+		{name: "tail scale-in", role: grovecorev1alpha1.PodGangEntryRoleTail, replicas: ptr.To(int32(2)), want: 2},
+		{name: "scale-out entry", role: grovecorev1alpha1.PodGangEntryRoleScaleOut, replicas: ptr.To(int32(4)), want: 4},
+		{name: "missing member uses template", role: grovecorev1alpha1.PodGangEntryRoleAnchor, want: 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pcs := &grovecorev1alpha1.PodCliqueSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-pcs", Namespace: "default"},
+				Spec: grovecorev1alpha1.PodCliqueSetSpec{Template: grovecorev1alpha1.PodCliqueSetTemplateSpec{
+					Cliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{{
+						Name: "worker", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 3, MinAvailable: ptr.To(int32(2))},
+					}},
+					PodCliqueScalingGroupConfigs: []grovecorev1alpha1.PodCliqueScalingGroupConfig{{
+						Name: "sg", CliqueNames: []string{"worker"}, Replicas: ptr.To(int32(1)), MinAvailable: ptr.To(int32(1)),
+					}},
+				}},
+			}
+			ss := &syncState{
+				pcs: pcs, existingPCLQByName: make(map[string]grovecorev1alpha1.PodClique),
+				existingPCLQPods: make(map[string][]v1.Pod),
+			}
+			if test.replicas != nil {
+				ss.existingPCLQByName[memberName] = grovecorev1alpha1.PodClique{
+					ObjectMeta: metav1.ObjectMeta{Name: memberName, Namespace: pcs.Namespace},
+					Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: *test.replicas, MinAvailable: ptr.To(int32(2))},
+				}
+			}
+			entry := grovecorev1alpha1.PodGangEntry{
+				Role: test.role, Epoch: "1000",
+				PCSGReplicaIndices: map[string][]int32{"sg": {0}},
+			}
+			r := &_resource{}
+			gangs, err := r.buildPodGangInfosFromEntry(ss, 0, entry)
+			require.NoError(t, err)
+			require.Len(t, gangs, 1)
+			require.Len(t, gangs[0].pclqs, 1)
+			require.Equal(t, test.want, gangs[0].pclqs[0].replicas)
+			require.EqualValues(t, 2, gangs[0].pclqs[0].minAvailable)
+			ss.expectedPodGangs = gangs
+			ss.expectedPodGangByName = podGangInfoByName(gangs)
+			if test.replicas != nil {
+				for _, name := range []string{"pod-a", "pod-b", "pod-c", "pod-d"} {
+					ss.existingPCLQPods[memberName] = append(ss.existingPCLQPods[memberName], v1.Pod{
+						ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{apicommon.LabelPodGang: gangs[0].fqn}},
+					})
+				}
+			}
+			ss.initializeAssignedAndUnassignedPodsForPCS()
+			groups := createPodGroupsForPodGang(pcs.Namespace, gangs[0])
+			require.Len(t, groups, 1)
+			if test.replicas == nil {
+				require.Empty(t, groups[0].PodReferences)
+			} else {
+				require.Len(t, groups[0].PodReferences, int(test.want), "membership must follow the live member, not its template")
+			}
+		})
+	}
+}
+
 // TestVerifyAllPodsCreated tests verifyAllPodsCreated with a minimal syncState and podGangInfo (no
 // PCS/prepareSyncFlow). It covers the constituent-PodClique existence check and the requeue-versus-
 // success gate for a single PodGang, whose pod accounting is delegated to
@@ -1508,15 +1575,17 @@ func TestInitializeAssignedAndUnassignedPodsForPCS(t *testing.T) {
 		return pod
 	}
 
-	assignedPodGang := &podGangInfo{fqn: "test-pcs-0-1000", pclqs: []pclqInfo{{fqn: pclqName}}}
+	assignedPodGang := &podGangInfo{fqn: "test-pcs-0-1000", pclqs: []pclqInfo{{fqn: pclqName, replicas: 1}}}
 	ss := &syncState{
 		existingPCLQPods: map[string][]v1.Pod{
 			pclqName: {
+				makePod("assigned-1", "test-pcs-0-1000"),
 				makePod("assigned-0", "test-pcs-0-1000"),
 				makePod("unassigned-0", ""),
 				makePod("unknown-0", "test-pcs-0-9999"),
 			},
 		},
+		expectedPodGangs:      []*podGangInfo{assignedPodGang},
 		expectedPodGangByName: map[string]*podGangInfo{assignedPodGang.fqn: assignedPodGang},
 		unassignedPodsByPCLQ:  make(map[string][]v1.Pod),
 	}
@@ -2075,4 +2144,21 @@ func makeClusterTopologyBindingWithLevels(name string, levels []grovecorev1alpha
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec:       grovecorev1alpha1.ClusterTopologyBindingSpec{Levels: levels},
 	}
+}
+
+// TestBuildPodGangInfosFromEmptyAnchorEntry verifies that an empty anchor entry materializes no
+// PodGang (GREP-0677).
+func TestBuildPodGangInfosFromEmptyAnchorEntry(t *testing.T) {
+	r := &_resource{}
+	ss := &syncState{}
+	emptyAnchor := grovecorev1alpha1.PodGangEntry{
+		Role:        grovecorev1alpha1.PodGangEntryRoleAnchor,
+		Epoch:       "100",
+		AnchorIndex: ptr.To[int32](0),
+	}
+
+	infos, err := r.buildPodGangInfosFromEntry(ss, 0, emptyAnchor)
+
+	require.NoError(t, err)
+	assert.Empty(t, infos, "empty anchor entry must not materialize a PodGang")
 }

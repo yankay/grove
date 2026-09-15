@@ -17,6 +17,7 @@ package podgangmap
 import (
 	"cmp"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 
@@ -60,20 +61,33 @@ func sortEntriesByEpoch(entries []grovecorev1alpha1.PodGangEntry) error {
 	return nil
 }
 
-// isPodGangEntryEmpty reports whether an entry carries no standalone PodClique pods and no
-// PodCliqueScalingGroup replica indices.
-func isPodGangEntryEmpty(entry grovecorev1alpha1.PodGangEntry) bool {
-	for _, count := range entry.PodCliques {
-		if count > 0 {
-			return false
+// epochAllocator issues fresh, strictly increasing epoch strings for one PodGangMap reconcile.
+type epochAllocator struct {
+	next int64
+}
+
+// newEpochAllocator starts after both unixNano and every existing epoch.
+func newEpochAllocator(entries []grovecorev1alpha1.PodGangEntry, unixNano int64) (*epochAllocator, error) {
+	next := unixNano
+	for i := range entries {
+		existing, err := strconv.ParseInt(entries[i].Epoch, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("PodGangMap entry has invalid epoch %q: %w", entries[i].Epoch, err)
+		}
+		if existing >= next {
+			if existing == math.MaxInt64 {
+				return nil, fmt.Errorf("PodGangMap entry epoch %q cannot be incremented", entries[i].Epoch)
+			}
+			next = existing + 1
 		}
 	}
-	for _, indices := range entry.PCSGReplicaIndices {
-		if len(indices) > 0 {
-			return false
-		}
-	}
-	return true
+	return &epochAllocator{next: next}, nil
+}
+
+func (a *epochAllocator) allocate() string {
+	epoch := strconv.FormatInt(a.next, 10)
+	a.next++
+	return epoch
 }
 
 // advanceEntriesGenerationHash sets every entry's PodCliqueSetGenerationHash to

@@ -35,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -111,8 +112,7 @@ func TestIsPodInPodReferences(t *testing.T) {
 	}
 }
 
-// TestCanRemoveSchedulingGate verifies the gate is liftable only when the pod's PodGang exists,
-// records the pod in its PodReferences, and that PodGang's epoch dependencies are satisfied.
+// TestCanRemoveSchedulingGate verifies every prerequisite independently keeps the gate closed.
 func TestCanRemoveSchedulingGate(t *testing.T) {
 	podGangName := podGangNameForEpoch(testAnchor0Epoch)
 	pod := gatedPod("pod-a", podGangName)
@@ -139,8 +139,38 @@ func TestCanRemoveSchedulingGate(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			actual := canRemoveSchedulingGate(logr.Discard(), pod, testCliqueName, tc.podGangByName, tc.dependencySatisfiedByEpoch)
+			actual := canRemoveSchedulingGate(logr.Discard(), pod, testCliqueName, &schedulingGateSnapshot{
+				podGangByName:              tc.podGangByName,
+				dependencySatisfiedByEpoch: tc.dependencySatisfiedByEpoch,
+				backendSyncedByPodGang:     map[string]bool{podGangName: true},
+				pcsgMinimumScheduled:       true,
+			})
 			assert.Equal(t, tc.expected, actual)
+		})
+	}
+
+	for _, tc := range []struct {
+		name                 string
+		backendSynced        map[string]bool
+		pcsgMinimumScheduled bool
+		terminating          bool
+	}{
+		{"native policy is stale", map[string]bool{podGangName: false}, true, false},
+		{"native policy observation is missing", nil, true, false},
+		{"live PCSG minimum is not scheduled", map[string]bool{podGangName: true}, false, false},
+		{"PodGang is terminating", map[string]bool{podGangName: true}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gang := podGangWithPod.DeepCopy()
+			if tc.terminating {
+				gang.DeletionTimestamp = ptr.To(metav1.Now())
+			}
+			assert.False(t, canRemoveSchedulingGate(logr.Discard(), pod, testCliqueName, &schedulingGateSnapshot{
+				podGangByName:              map[string]*groveschedulerv1alpha1.PodGang{podGangName: gang},
+				dependencySatisfiedByEpoch: map[string]bool{testAnchor0Epoch: true},
+				backendSyncedByPodGang:     tc.backendSynced,
+				pcsgMinimumScheduled:       tc.pcsgMinimumScheduled,
+			}))
 		})
 	}
 }
@@ -181,6 +211,20 @@ func TestResolveDependencySatisfiedByEpoch(t *testing.T) {
 			expected:        map[string]bool{testAnchor0Epoch: true, testTailEpoch: false},
 		},
 		{
+			name: "idle anchor needs no materialized PodGang",
+			entries: []grovecorev1alpha1.PodGangEntry{
+				testutils.NewPodGangEntryBuilder("hash", testAnchor0Epoch).
+					WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(0).Build(),
+				scaleOutEntry(testScaleOutEpoch, testAnchor0Epoch),
+			},
+			expected: map[string]bool{testAnchor0Epoch: true, testScaleOutEpoch: true},
+		},
+		{
+			name:     "unknown dependency still blocks scheduling",
+			entries:  []grovecorev1alpha1.PodGangEntry{scaleOutEntry(testScaleOutEpoch, "missing")},
+			expected: map[string]bool{testScaleOutEpoch: false},
+		},
+		{
 			name: "dependency epoch belonging to a tail is resolved the same as an anchor",
 			entries: []grovecorev1alpha1.PodGangEntry{
 				anchorEntry(),
@@ -215,6 +259,9 @@ func TestResolveDependencySatisfiedByEpoch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var objects []client.Object
 			for _, entry := range tc.entries {
+				if componentutils.IsPodGangEntryEmpty(entry) {
+					continue
+				}
 				builder := testutils.NewPodGangBuilder(podGangNameForEpoch(entry.Epoch), testNamespace).
 					WithLabels(map[string]string{
 						apicommon.LabelPartOfKey:                testPCSName,
@@ -304,7 +351,7 @@ func TestCheckAndRemovePodSchedulingGates(t *testing.T) {
 			}
 
 			cl := testutils.NewTestClientBuilder().WithObjects(objects...).Build()
-			r := &_resource{client: cl}
+			r := &_resource{client: cl, schedRegistry: testutils.NewDefaultFakeRegistry()}
 			ss := gateRemovalSnapshot([]*corev1.Pod{tc.pod}, twoEpochPGM())
 
 			skipped, err := r.checkAndRemovePodSchedulingGates(context.Background(), logr.Discard(), ss)
@@ -330,7 +377,7 @@ func TestCheckAndRemovePodSchedulingGates(t *testing.T) {
 			WithPodGroupPods(testCliqueName, pod.Name).
 			Build()
 		cl := testutils.NewTestClientBuilder().WithObjects(pod, podGang).Build()
-		r := &_resource{client: cl}
+		r := &_resource{client: cl, schedRegistry: testutils.NewDefaultFakeRegistry()}
 		ss := gateRemovalSnapshot([]*corev1.Pod{pod}, twoEpochPGM())
 
 		skipped, err := r.checkAndRemovePodSchedulingGates(context.Background(), logr.Discard(), ss)
@@ -590,6 +637,7 @@ func anchorEntry() grovecorev1alpha1.PodGangEntry {
 	return testutils.NewPodGangEntryBuilder("hash", testAnchor0Epoch).
 		WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
 		WithAnchorIndex(0).
+		WithPodCliques(map[string]int32{testCliqueName: 1}).
 		Build()
 }
 
@@ -597,6 +645,7 @@ func anchorDependentEntry(epoch string, anchorIndex int32, dependsOnEpoch string
 	return testutils.NewPodGangEntryBuilder("hash", epoch).
 		WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
 		WithAnchorIndex(anchorIndex).
+		WithPodCliques(map[string]int32{testCliqueName: 1}).
 		WithDependsOn(dependsOnEpoch).
 		Build()
 }
@@ -604,6 +653,7 @@ func anchorDependentEntry(epoch string, anchorIndex int32, dependsOnEpoch string
 func tailEntry(epoch, dependsOnEpoch string) grovecorev1alpha1.PodGangEntry {
 	return testutils.NewPodGangEntryBuilder("hash", epoch).
 		WithRole(grovecorev1alpha1.PodGangEntryRoleTail).
+		WithPCSGReplicaIndices(map[string][]int32{"workers": {0}}).
 		WithDependsOn(dependsOnEpoch).
 		Build()
 }
@@ -611,6 +661,7 @@ func tailEntry(epoch, dependsOnEpoch string) grovecorev1alpha1.PodGangEntry {
 func scaleOutEntry(epoch, dependsOnEpoch string) grovecorev1alpha1.PodGangEntry {
 	return testutils.NewPodGangEntryBuilder("hash", epoch).
 		WithRole(grovecorev1alpha1.PodGangEntryRoleScaleOut).
+		WithPCSGReplicaIndices(map[string][]int32{"workers": {1}}).
 		WithDependsOn(dependsOnEpoch).
 		Build()
 }

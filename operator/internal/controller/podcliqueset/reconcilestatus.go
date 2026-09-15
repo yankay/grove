@@ -252,7 +252,7 @@ func (r *Reconciler) computePCLQsStatus(pcs *grovecorev1alpha1.PodCliqueSet, exp
 
 	isAvailable = len(nonTerminatedPCLQs) == expectedStandalonePCLQs &&
 		lo.EveryBy(nonTerminatedPCLQs, func(pclq grovecorev1alpha1.PodClique) bool {
-			return pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable
+			return pclq.Spec.Replicas == 0 || pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable
 		})
 
 	isUpdated = isAvailable && lo.EveryBy(nonTerminatedPCLQs, func(pclq grovecorev1alpha1.PodClique) bool {
@@ -271,13 +271,14 @@ func isStandalonePCLQUpdated(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecor
 	if err != nil || expectedPodTemplateHash == "" {
 		return false
 	}
+	// Idle cliques have no pods to roll, but their hashes must still converge.
 	return pclq.Labels[apicommon.LabelPodTemplateHash] == expectedPodTemplateHash &&
 		pclq.Status.CurrentPodTemplateHash != nil &&
 		*pclq.Status.CurrentPodTemplateHash == expectedPodTemplateHash &&
 		pclq.Status.CurrentPodCliqueSetGenerationHash != nil &&
 		*pclq.Status.CurrentPodCliqueSetGenerationHash == *pcs.Status.CurrentGenerationHash &&
-		pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable &&
-		pclq.Status.UpdatedReplicas >= *pclq.Spec.MinAvailable
+		(pclq.Spec.Replicas == 0 || (pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable &&
+			pclq.Status.UpdatedReplicas >= *pclq.Spec.MinAvailable))
 }
 
 // computePCSGsStatus checks if PodCliqueScalingGroups are available and updated.
@@ -288,7 +289,7 @@ func (r *Reconciler) computePCSGsStatus(pcsGenerationHash *string, expectedPCSGs
 
 	isAvailable = expectedPCSGs == len(nonTerminatedPCSGs) &&
 		lo.EveryBy(nonTerminatedPCSGs, func(pcsg grovecorev1alpha1.PodCliqueScalingGroup) bool {
-			return pcsg.Status.AvailableReplicas >= *pcsg.Spec.MinAvailable
+			return pcsg.Spec.Replicas == 0 || pcsg.Status.AvailableReplicas >= *pcsg.Spec.MinAvailable
 		})
 
 	isUpdated = isAvailable && lo.EveryBy(nonTerminatedPCSGs, func(pcsg grovecorev1alpha1.PodCliqueScalingGroup) bool {

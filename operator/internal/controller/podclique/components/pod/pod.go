@@ -180,6 +180,22 @@ func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grov
 	labels := getLabels(pclq.ObjectMeta, pcsName, podGangName, pcsReplicaIndex, podIndex, pcsgPodIndex)
 	annotations := maps.Clone(pclq.Annotations)
 	delete(annotations, constants.AnnotationPodCliqueScalingGroupPodIndexOffset)
+	recovery, err := componentutils.GetGangRecovery(pcs, pcsReplicaIndex)
+	if err != nil {
+		return err
+	}
+	if recovery.Phase == componentutils.GangRecoveryDraining {
+		return groveerr.New(groveerr.ErrCodeRequeueAfter, component.OperationSync,
+			"gang recovery is still draining old pods")
+	}
+	if recovery.Epoch != "" {
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		annotations[componentutils.AnnotationPodRecoveryEpoch] = recovery.Epoch
+	} else {
+		delete(annotations, componentutils.AnnotationPodRecoveryEpoch)
+	}
 	pod.ObjectMeta = metav1.ObjectMeta{
 		GenerateName: fmt.Sprintf("%s-", pclq.Name),
 		Namespace:    pclq.Namespace,
@@ -194,7 +210,9 @@ func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grov
 		)
 	}
 	pod.Spec = *pclq.Spec.PodSpec.DeepCopy()
-	pod.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: podGangSchedulingGate}}
+	if !hasPodGangSchedulingGate(pod) {
+		pod.Spec.SchedulingGates = append(pod.Spec.SchedulingGates, corev1.PodSchedulingGate{Name: podGangSchedulingGate})
+	}
 
 	// Resolve scheduler: from template or default backend; then prepare pod (schedulerName, annotations, etc.)
 	schedulerName := pclq.Spec.PodSpec.SchedulerName

@@ -87,6 +87,31 @@ func GenerateDependencyNamesForBasePodGang(pcs *grovecorev1alpha1.PodCliqueSet, 
 	return parentPCLQNames
 }
 
+// StartupDependencies resolves in-order or explicit dependencies within the materialized PodGang.
+// The caller validates StartupType and supplies candidate names for its ownership scope.
+func StartupDependencies(pcs *grovecorev1alpha1.PodCliqueSet, foundAtIndex int, startsAfter []string, activePCLQNames Set[string], candidates func(string) []string) []string {
+	activeDependencies := func(cliqueName string) []string {
+		return lo.Filter(lo.Uniq(candidates(cliqueName)), func(name string, _ int) bool {
+			return activePCLQNames.Has(name)
+		})
+	}
+	switch *pcs.Spec.Template.StartupType {
+	case grovecorev1alpha1.CliqueStartupTypeInOrder:
+		for index := foundAtIndex - 1; index >= 0; index-- {
+			if dependencies := activeDependencies(pcs.Spec.Template.Cliques[index].Name); len(dependencies) > 0 {
+				return dependencies
+			}
+		}
+	case grovecorev1alpha1.CliqueStartupTypeExplicit:
+		dependencies := make([]string, 0)
+		for _, cliqueName := range startsAfter {
+			dependencies = append(dependencies, activeDependencies(cliqueName)...)
+		}
+		return lo.Uniq(dependencies)
+	}
+	return nil
+}
+
 // GroupPCSGsByPCSReplicaIndex filters PCSGs that have a PodCliqueSetReplicaIndex label and groups them by the PCS replica index.
 // A PodCliqueSetReplicaIndex label that is not a valid integer is a contract violation and returns an error.
 func GroupPCSGsByPCSReplicaIndex(pcsgs []grovecorev1alpha1.PodCliqueScalingGroup) (map[int][]grovecorev1alpha1.PodCliqueScalingGroup, error) {

@@ -94,6 +94,9 @@ func mapPCSToPCSG() handler.MapFunc {
 		if !ok {
 			return nil
 		}
+		if componentutils.GangRecoveryAnnotationsChanged(nil, pcs.Annotations) {
+			return pcsgReconcileRequestsForPCSReplicas(pcs, lo.RangeFrom(int32(0), int(pcs.Spec.Replicas)))
+		}
 		if pcs.Status.UpdateProgress == nil {
 			return nil
 		}
@@ -148,6 +151,9 @@ func shouldEnqueueOnPCSUpdate(event event.UpdateEvent) bool {
 	newPCS, okNew := event.ObjectNew.(*grovecorev1alpha1.PodCliqueSet)
 	if !okOld || !okNew {
 		return false
+	}
+	if componentutils.GangRecoveryAnnotationsChanged(oldPCS.Annotations, newPCS.Annotations) {
+		return true
 	}
 
 	if oldPCS.Status.UpdateProgress != nil && newPCS.Status.UpdateProgress != nil {

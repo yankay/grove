@@ -281,13 +281,14 @@ func isPCLQUpdateComplete(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1
 	if err != nil || expectedPodTemplateHash == "" {
 		return false
 	}
+	// Idle cliques have no pods to roll, but their hashes must still converge.
 	return pclq.Labels[apicommon.LabelPodTemplateHash] == expectedPodTemplateHash &&
 		pclq.Status.CurrentPodTemplateHash != nil &&
 		*pclq.Status.CurrentPodTemplateHash == expectedPodTemplateHash &&
 		pclq.Status.CurrentPodCliqueSetGenerationHash != nil &&
 		*pclq.Status.CurrentPodCliqueSetGenerationHash == *pcs.Status.CurrentGenerationHash &&
-		pclq.Status.UpdatedReplicas >= *pclq.Spec.MinAvailable &&
-		pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable
+		(pclq.Spec.Replicas == 0 || (pclq.Status.UpdatedReplicas >= *pclq.Spec.MinAvailable &&
+			pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable))
 }
 
 // isAutoUpdateInProgress checks if an update is currently in progress.

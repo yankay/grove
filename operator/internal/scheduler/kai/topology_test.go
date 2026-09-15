@@ -400,7 +400,6 @@ func newTASBackend(t *testing.T, cl client.Client) scheduler.TopologyAwareBacken
 	recorder := record.NewFakeRecorder(10)
 	profile := configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai}
 	b := New(cl, cl.Scheme(), recorder, profile)
-	require.NoError(t, b.Init(cl))
 	return b.(scheduler.TopologyAwareBackend)
 }
 

@@ -17,6 +17,8 @@ package volcano
 import (
 	"context"
 	"fmt"
+	"maps"
+	"reflect"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
@@ -26,6 +28,7 @@ import (
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -45,6 +48,8 @@ type schedulerBackend struct {
 }
 
 var _ scheduler.Backend = (*schedulerBackend)(nil)
+
+var _ scheduler.PodGangResourceBackend = (*schedulerBackend)(nil)
 
 // New creates a Volcano scheduler backend from the given scheduler profile.
 func New(cl client.Client, scheme *runtime.Scheme, eventRecorder record.EventRecorder, profile configv1alpha1.SchedulerProfile) scheduler.Backend {
@@ -88,6 +93,9 @@ func (b *schedulerBackend) Init(directClient client.Client) error {
 }
 
 func (b *schedulerBackend) SyncPodGang(ctx context.Context, podGang *groveschedulerv1alpha1.PodGang) error {
+	if podGang == nil {
+		return fmt.Errorf("podGang is nil")
+	}
 	podGroup := &volcanov1beta1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podGang.Name,
@@ -95,30 +103,68 @@ func (b *schedulerBackend) SyncPodGang(ctx context.Context, podGang *groveschedu
 		},
 	}
 
-	_, err := controllerutil.CreateOrPatch(ctx, b.client, podGroup, func() error {
-		if podGroup.Labels == nil {
-			podGroup.Labels = map[string]string{}
-		}
-		for key, value := range podGang.Labels {
-			podGroup.Labels[key] = value
-		}
-
-		if err := controllerutil.SetControllerReference(podGang, podGroup, b.scheme); err != nil {
-			return err
-		}
-
-		if shouldSyncSchedulingConstraints(podGang, podGroup) {
-			podGroup.Spec.MinMember = minMemberForPodGang(podGang)
-			podGroup.Spec.SubGroupPolicy = subGroupPoliciesForPodGang(podGang)
-		}
-		podGroup.Spec.Queue = effectiveQueueFromAnnotations(podGang.Annotations)
-		podGroup.Spec.PriorityClassName = podGang.Spec.PriorityClassName
-		return nil
-	})
+	err := b.client.Get(ctx, client.ObjectKeyFromObject(podGroup), podGroup)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get Volcano PodGroup: %w", err)
+	}
+	creating := apierrors.IsNotFound(err)
+	if !creating && !metav1.IsControlledBy(podGroup, podGang) {
+		return fmt.Errorf("volcano PodGroup %s is not controlled by PodGang %s", client.ObjectKeyFromObject(podGroup), client.ObjectKeyFromObject(podGang))
+	}
+	if !podGroup.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("volcano PodGroup %s is terminating", client.ObjectKeyFromObject(podGroup))
+	}
+	before := podGroup.DeepCopy()
+	if err = b.applyPodGang(podGang, podGroup); err != nil {
+		return err
+	}
+	if creating {
+		err = b.client.Create(ctx, podGroup)
+	} else if !reflect.DeepEqual(before, podGroup) {
+		err = b.client.Patch(ctx, podGroup, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+	}
 	if err != nil {
 		return fmt.Errorf("failed to sync Volcano PodGroup for PodGang %s/%s: %w", podGang.Namespace, podGang.Name, err)
 	}
+	return nil
+}
 
+func (b *schedulerBackend) PodGangResource() client.Object {
+	return &volcanov1beta1.PodGroup{}
+}
+
+func (b *schedulerBackend) IsPodGangSynced(ctx context.Context, podGang *groveschedulerv1alpha1.PodGang) (bool, error) {
+	if podGang == nil {
+		return false, fmt.Errorf("podGang is nil")
+	}
+	current := &volcanov1beta1.PodGroup{}
+	if err := b.client.Get(ctx, client.ObjectKeyFromObject(podGang), current); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	if !current.DeletionTimestamp.IsZero() || !metav1.IsControlledBy(current, podGang) {
+		return false, nil
+	}
+	desired := current.DeepCopy()
+	if err := b.applyPodGang(podGang, desired); err != nil {
+		return false, err
+	}
+	return reflect.DeepEqual(current, desired), nil
+}
+
+func (b *schedulerBackend) applyPodGang(podGang *groveschedulerv1alpha1.PodGang, podGroup *volcanov1beta1.PodGroup) error {
+	if podGroup.Labels == nil {
+		podGroup.Labels = map[string]string{}
+	}
+	maps.Copy(podGroup.Labels, podGang.Labels)
+	if err := controllerutil.SetControllerReference(podGang, podGroup, b.scheme); err != nil {
+		return err
+	}
+	if shouldSyncSchedulingConstraints(podGang, podGroup) {
+		podGroup.Spec.MinMember = minMemberForPodGang(podGang)
+		podGroup.Spec.SubGroupPolicy = subGroupPoliciesForPodGang(podGang)
+	}
+	podGroup.Spec.Queue = effectiveQueueFromAnnotations(podGang.Annotations)
+	podGroup.Spec.PriorityClassName = podGang.Spec.PriorityClassName
 	return nil
 }
 

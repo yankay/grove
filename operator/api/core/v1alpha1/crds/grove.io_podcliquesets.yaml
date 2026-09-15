@@ -678,8 +678,9 @@ spec:
                                 MinAvailable serves two purposes:
                                 1. It defines the minimum number of pods that are guaranteed to be gang scheduled.
                                 2. It defines the minimum requirement of available pods in a PodClique. Violation of this threshold will result
-                                in termination of the PodGang that it belongs to. If MinAvailable is not set, then it will default to the template
-                                Replicas.
+                                in termination of the PodGang that it belongs to. On creation, an omitted MinAvailable defaults to
+                                max(1, Replicas). A positive MinAvailable is immutable and remains positive during hibernation.
+                                Legacy objects with an absent or non-positive value may explicitly set a valid positive minimum.
                               format: int32
                               type: integer
                             podSpec:
@@ -9342,9 +9343,13 @@ spec:
                               - containers
                               type: object
                             replicas:
-                              description: Replicas is the number of replicas of the
-                                pods in the clique. It cannot be less than 1.
+                              default: 1
+                              description: |-
+                                Replicas is the number of replicas of the pods in the clique. GREP-0677: it is either 0
+                                (an intentional idle state) or at least MinAvailable. When omitted it defaults to 1; an
+                                explicit 0 is preserved.
                               format: int32
+                              minimum: 0
                               type: integer
                             roleName:
                               description: RoleName is the name of the role that this
@@ -9368,6 +9373,14 @@ spec:
                           - replicas
                           - roleName
                           type: object
+                          x-kubernetes-validations:
+                          - message: spec.replicas must be 0 (idle) or greater than
+                              or equal to spec.minAvailable
+                            optionalOldSelf: true
+                            rule: self.replicas == 0 || !has(self.minAvailable) ||
+                              self.replicas >= self.minAvailable || (oldSelf.hasValue()
+                              && self.replicas == oldSelf.value().replicas && has(oldSelf.value().minAvailable)
+                              && self.minAvailable == oldSelf.value().minAvailable)
                         topologyConstraint:
                           description: |-
                             TopologyConstraint defines topology placement requirements for PodClique.

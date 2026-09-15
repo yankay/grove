@@ -189,8 +189,14 @@ func (r _resource) computeExpectedPodGangs(ctx context.Context, ss *syncState) (
 // replica indices the entry holds. A non-anchor entry (Tail or ScaleOut) yields one PodGang per
 // (PodCliqueScalingGroup, replica index) it carries.
 func (r _resource) buildPodGangInfosFromEntry(ss *syncState, pcsReplicaIndex int, pgEntry grovecorev1alpha1.PodGangEntry) ([]*podGangInfo, error) {
+	if pgEntry.Role == grovecorev1alpha1.PodGangEntryRoleAnchor && componentutils.IsPodGangEntryEmpty(pgEntry) {
+		return nil, nil
+	}
+	rnr := apicommon.ResourceNameReplica{Name: ss.pcs.Name, Replica: pcsReplicaIndex}
+	if _, err := componentutils.ActivePodCliqueNamesForEntry(ss.pcs, rnr, &pgEntry); err != nil {
+		return nil, err
+	}
 	if pgEntry.Role == grovecorev1alpha1.PodGangEntryRoleAnchor {
-		rnr := apicommon.ResourceNameReplica{Name: ss.pcs.Name, Replica: pcsReplicaIndex}
 		pg := &podGangInfo{
 			fqn:                apicommon.GenerateAnchorPodGangName(rnr, pgEntry.Epoch),
 			pcsReplicaIndex:    pcsReplicaIndex,
@@ -325,6 +331,11 @@ func buildPCLQInfosAndTopoConstraintsForPCSGReplica(ss *syncState, pcsReplicaInd
 			replicas:     pclqTemplateSpec.Spec.Replicas,
 			minAvailable: *pclqTemplateSpec.Spec.MinAvailable,
 			isStandalone: false,
+		}
+		// PCSG members can scale independently. Templates initialize missing members,
+		// but must not truncate live membership or keep a scaled-in gang waiting.
+		if pclq, ok := ss.existingPCLQByName[pclqFQN]; ok {
+			pi.replicas = pclq.Spec.Replicas
 		}
 		pi.topologyConstraint = createTopologyPackConstraint(ss, types.NamespacedName{Namespace: ss.pcs.Namespace, Name: pclqFQN}, pclqTemplateSpec.TopologyConstraint)
 		pclqs = append(pclqs, pi)
@@ -773,6 +784,15 @@ func (ss *syncState) initializeAssignedAndUnassignedPodsForPCS() {
 				pgi.refreshAssociatedPCLQPods(pclqName, pod.Name)
 			} else {
 				ss.unassignedPodsByPCLQ[pclqName] = append(ss.unassignedPodsByPCLQ[pclqName], pod)
+			}
+		}
+	}
+	for _, podGang := range ss.expectedPodGangs {
+		for i := range podGang.pclqs {
+			pclq := &podGang.pclqs[i]
+			slices.Sort(pclq.associatedPodNames)
+			if len(pclq.associatedPodNames) > int(pclq.replicas) {
+				pclq.associatedPodNames = pclq.associatedPodNames[:pclq.replicas]
 			}
 		}
 	}

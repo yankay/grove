@@ -27,6 +27,7 @@ import (
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	ctrlutils "github.com/ai-dynamo/grove/operator/internal/controller/utils"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/resourceclaim"
 	"github.com/ai-dynamo/grove/operator/internal/utils"
@@ -34,6 +35,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/samber/lo"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -120,6 +122,10 @@ func (r _resource) runSyncFlow(ctx context.Context, logger logr.Logger, ss *sync
 	if err := r.triggerDeletionOfExcessPCSGReplicas(ctx, logger, ss); err != nil {
 		return err
 	}
+	retiringPCLQs, err := r.recreateStaleScaleOutPCLQs(ctx, ss)
+	if err != nil {
+		return err
+	}
 	if err := r.syncPCSGPodIndexOffsets(ctx, ss); err != nil {
 		return err
 	}
@@ -127,13 +133,16 @@ func (r _resource) runSyncFlow(ctx context.Context, logger logr.Logger, ss *sync
 	// For OnDelete update strategy, use createOrUpdatePCLQs which performs in-place updates.
 	// For RollingRecreate (default) update strategy, use createExpectedPCLQs which only creates missing PodCliques.
 	if !componentutils.IsAutoUpdateStrategy(ss.pcs) {
-		if err := r.createOrUpdatePCLQs(ctx, logger, ss); err != nil {
+		if err := r.createOrUpdatePCLQs(ctx, logger, ss, retiringPCLQs); err != nil {
 			return err
 		}
 	} else {
 		if err := r.createExpectedPCLQs(ctx, logger, ss); err != nil {
 			return err
 		}
+	}
+	if len(retiringPCLQs) > 0 {
+		return groveerr.New(groveerr.ErrCodeRequeueAfter, component.OperationSync, "waiting for retired ScaleOut PodCliques and Pods to drain")
 	}
 
 	// Only if the rolling update is not in progress, check for a possibility of gang termination and execute it only if
@@ -163,6 +172,52 @@ func (r _resource) runSyncFlow(ctx context.Context, logger logr.Logger, ss *sync
 		)
 	}
 	return nil
+}
+
+// recreateStaleScaleOutPCLQs handles a scale-in/out cycle observed by the PCS
+// controller before the PCSG controller deletes the old members. A fresh epoch
+// needs fresh Pods with scheduler-native membership and gates, not label adoption.
+func (r _resource) recreateStaleScaleOutPCLQs(ctx context.Context, ss *syncSnapshot) (componentutils.Set[string], error) {
+	rnr := apicommon.ResourceNameReplica{Name: ss.pcs.Name, Replica: ss.pcsReplicaIndex}
+	configName, err := apicommon.ExtractScalingGroupNameFromPCSGFQN(ss.pcsg.Name, rnr)
+	if err != nil {
+		return nil, err
+	}
+	existingByName := make(map[string]*grovecorev1alpha1.PodClique, len(ss.existingPCLQs))
+	for i := range ss.existingPCLQs {
+		pclq := &ss.existingPCLQs[i]
+		existingByName[pclq.Name] = pclq
+	}
+	retiring := make(componentutils.Set[string])
+	for replicaIndex, names := range ss.expectedPCLQFQNsPerPCSGReplica {
+		entry, err := componentutils.FindPodGangEntryForPCSGReplica(ss.pgm.Spec.Entries, "", configName, int32(replicaIndex))
+		if err != nil {
+			return nil, err
+		}
+		if entry == nil || entry.Role != grovecorev1alpha1.PodGangEntryRoleScaleOut {
+			continue
+		}
+		desiredGang := apicommon.GenerateNonAnchorPodGangName(rnr, entry.Epoch, configName, int32(replicaIndex))
+		for _, name := range names {
+			pclq := existingByName[name]
+			if pclq == nil || !metav1.IsControlledBy(pclq, ss.pcsg) ||
+				pclq.Labels[apicommon.LabelPodGang] == desiredGang {
+				continue
+			}
+			if !metav1.IsControlledBy(ss.pcsg, ss.pcs) || !metav1.IsControlledBy(ss.pgm, ss.pcs) ||
+				!ctrlutils.IsManagedByGrove(ss.pgm.Labels) {
+				return nil, groveerr.New(groveerr.ErrCodeRequeueAfter, component.OperationSync, "waiting for Grove-owned ScaleOut placement")
+			}
+			retiring[pclq.Name] = struct{}{}
+			if !pclq.DeletionTimestamp.IsZero() {
+				continue
+			}
+			if err := client.IgnoreNotFound(r.client.Delete(ctx, pclq, client.Preconditions{UID: &pclq.UID, ResourceVersion: &pclq.ResourceVersion})); err != nil {
+				return nil, fmt.Errorf("delete PodClique %s from a retired ScaleOut epoch: %w", pclq.Name, err)
+			}
+		}
+	}
+	return retiring, nil
 }
 
 // syncPCSGPodIndexOffsets reconciles internal offsets on existing PodCliques without recreating them.
@@ -250,12 +305,77 @@ func (r _resource) triggerDeletionOfExcessPCSGReplicas(ctx context.Context, logg
 		logger.Info("Found more PodCliques than expected, triggering deletion of excess PodCliques", "expected", int(ss.pcsg.Spec.Replicas), "existing", existingPCSGReplicas, "diff", diff)
 		reason := "Delete excess PodCliqueScalingGroup replicas"
 		replicaIndicesToDelete := computePCSGReplicasToDelete(existingPCSGReplicas, int(ss.pcsg.Spec.Replicas))
+		if err := r.ensurePCSGScaleInReady(ctx, ss, replicaIndicesToDelete); err != nil {
+			return err
+		}
 		deletionTasks := r.createDeleteTasks(logger, ss.pcs, pcsgObjectKey.Name, replicaIndicesToDelete, reason)
 		if err := r.triggerDeletionOfPodCliques(ctx, logger, pcsgObjectKey, deletionTasks); err != nil {
 			return err
 		}
 
 		return ss.refreshExistingPCLQs(ss.pcsg)
+	}
+	return nil
+}
+
+// ensurePCSGScaleInReady prevents member PodCliques from being deleted until their replica indices
+// have left the PodGangMap and all Grove-owned PodGangs have dropped their PodGroups.
+func (r _resource) ensurePCSGScaleInReady(ctx context.Context, ss *syncSnapshot, replicaIndices []string) error {
+	requeue := func(message string) error {
+		return groveerr.New(groveerr.ErrCodeRequeueAfter, component.OperationSync, message)
+	}
+	if !ctrlutils.IsManagedByGrove(ss.pgm.Labels) || !metav1.IsControlledBy(ss.pgm, ss.pcs) {
+		return requeue(fmt.Sprintf("PodGangMap %s has not converged under PodCliqueSet ownership", ss.pgm.Name))
+	}
+
+	rnr := apicommon.ResourceNameReplica{Name: ss.pcs.Name, Replica: ss.pcsReplicaIndex}
+	pcsgConfigName, err := apicommon.ExtractScalingGroupNameFromPCSGFQN(ss.pcsg.Name, rnr)
+	if err != nil {
+		return groveerr.WrapError(err, errCodeParsePodCliqueScalingGroupReplicaIndex, component.OperationSync,
+			fmt.Sprintf("failed to resolve PodCliqueScalingGroup config name for %s", ss.pcsg.Name))
+	}
+	targetIndexSet := componentutils.NewSet(replicaIndices)
+	targetPCLQNames := make(componentutils.Set[string])
+	for index := range targetIndexSet {
+		replicaIndex, err := strconv.Atoi(index)
+		if err != nil {
+			return groveerr.WrapError(err, errCodeParsePodCliqueScalingGroupReplicaIndex, component.OperationSync,
+				fmt.Sprintf("invalid PodCliqueScalingGroup replica index %q", index))
+		}
+		entry, err := componentutils.FindPodGangEntryForPCSGReplica(ss.pgm.Spec.Entries, "", pcsgConfigName, int32(replicaIndex))
+		if err != nil {
+			return requeue(fmt.Sprintf("PodGangMap %s has invalid membership for PodCliqueScalingGroup %s: %v", ss.pgm.Name, ss.pcsg.Name, err))
+		}
+		if entry != nil {
+			return requeue(fmt.Sprintf("PodGangMap %s still references PodCliqueScalingGroup %s replica index %d", ss.pgm.Name, ss.pcsg.Name, replicaIndex))
+		}
+		for _, cliqueName := range ss.pcsg.Spec.CliqueNames {
+			targetPCLQNames[apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{
+				Name: ss.pcsg.Name, Replica: replicaIndex,
+			}, cliqueName)] = struct{}{}
+		}
+	}
+	for i := range ss.existingPCLQs {
+		if targetIndexSet.Has(ss.existingPCLQs[i].Labels[apicommon.LabelPodCliqueScalingGroupReplicaIndex]) {
+			targetPCLQNames[ss.existingPCLQs[i].Name] = struct{}{}
+		}
+	}
+
+	podGangs, err := componentutils.GetExistingPodGangs(ctx, r.client, ss.pcs.ObjectMeta, ss.pcs.Namespace)
+	if err != nil {
+		return groveerr.WrapError(err, errCodeListPodGangs, component.OperationSync,
+			fmt.Sprintf("failed to list PodGangs for PodCliqueSet %s", client.ObjectKeyFromObject(ss.pcs)))
+	}
+	for i := range podGangs {
+		podGang := &podGangs[i]
+		if !ctrlutils.IsManagedPodGang(podGang) || !metav1.IsControlledBy(podGang, ss.pcs) {
+			continue
+		}
+		for _, podGroup := range podGang.Spec.PodGroups {
+			if targetPCLQNames.Has(podGroup.Name) {
+				return requeue(fmt.Sprintf("PodGang %s still references PodClique %s", podGang.Name, podGroup.Name))
+			}
+		}
 	}
 	return nil
 }
@@ -318,10 +438,13 @@ func (r _resource) createExpectedPCLQs(ctx context.Context, logger logr.Logger, 
 
 // createOrUpdatePCLQs creates or updates all expected PodCliques for the PodCliqueScalingGroup.
 // This is used for the OnDelete update strategy where changes are applied in place rather than through recreation.
-func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, ss *syncSnapshot) error {
+func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, ss *syncSnapshot, retiringPCLQs componentutils.Set[string]) error {
 	var tasks []utils.Task
 	for pcsgReplicaIndex, expectedPCLQNames := range ss.expectedPCLQFQNsPerPCSGReplica {
 		for _, pclqFQN := range expectedPCLQNames {
+			if retiringPCLQs.Has(pclqFQN) {
+				continue
+			}
 			pclqObjectKey := client.ObjectKey{
 				Name:      pclqFQN,
 				Namespace: ss.pcsg.Namespace,
@@ -348,6 +471,13 @@ func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, 
 
 // processMinAvailableBreachedPCSGReplicas handles gang termination of PCSG replicas that have breached minimum availability requirements
 func (r _resource) processMinAvailableBreachedPCSGReplicas(ctx context.Context, logger logr.Logger, ss *syncSnapshot) error {
+	recovery, err := componentutils.GetGangRecoveryForChild(ss.pcs, ss.pcsg.ObjectMeta)
+	if err != nil {
+		return err
+	}
+	if recovery.Active() {
+		return nil
+	}
 	// If pcsg.spec.minAvailable is breached, then delegate the responsibility to the PodCliqueSet reconciler which after
 	// termination delay terminate the PodCliqueSet replica. No further processing is required to be done here.
 	minAvailableBreachedPCSGReplicas := len(ss.pcsgIndicesToTerminate) + len(ss.pcsgIndicesToRequeue)

@@ -526,7 +526,7 @@ func TestBuildResource(t *testing.T) {
 				},
 			}
 
-			err := r.buildResource(pcsg, tc.pcs, tc.pcsReplica, *tc.pcsgCfg, false)
+			err := r.buildResource(pcsg, tc.pcs, tc.pcsReplica, *tc.pcsgCfg)
 			assert.NoError(t, err)
 
 			if tc.validate != nil {
@@ -641,7 +641,7 @@ func TestBuildResource_MNNVLAnnotationPropagation(t *testing.T) {
 				},
 			}
 
-			err := r.buildResource(pcsg, pcs, 0, pcsgCfg, false)
+			err := r.buildResource(pcsg, pcs, 0, pcsgCfg)
 			require.NoError(t, err)
 
 			if tc.expectedAnnotations != nil {

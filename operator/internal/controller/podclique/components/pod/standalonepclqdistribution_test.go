@@ -38,6 +38,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -338,6 +339,7 @@ func TestReconcileStandalonePCLQDistributionCreateAndDelete(t *testing.T) {
 	testPCS := testutils.NewPodCliqueSetBuilder(testPCSName, testNamespace, "uid").
 		WithPodCliqueTemplateSpec(testutils.NewPodCliqueTemplateSpecBuilder(testCliqueName).WithPodSpec(podSpec).Build()).
 		Build()
+	testPCS.Spec.Template.StartupType = ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder)
 	// The PodClique name must be a real FQN so buildResource can resolve the PCS replica index from it.
 	newPCLQ := func(replicas int32) *grovecorev1alpha1.PodClique {
 		pclq := testutils.NewPodCliqueBuilder(testPCSName, "uid", testCliqueName, testNamespace, testPCSReplicaIndex).WithReplicas(replicas).Build()

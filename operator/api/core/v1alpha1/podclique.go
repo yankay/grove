@@ -23,6 +23,8 @@ import (
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:object:root=true
+// +kubebuilder:validation:XValidation:rule="has(self.spec.minAvailable) ? self.spec.minAvailable > 0 || (oldSelf.hasValue() && has(oldSelf.value().spec.minAvailable) && self.spec.minAvailable == oldSelf.value().spec.minAvailable) : oldSelf.hasValue() && !has(oldSelf.value().spec.minAvailable)",message="spec.minAvailable must be set to a positive value",fieldPath=".spec.minAvailable",optionalOldSelf=true
+// +kubebuilder:validation:XValidation:rule="!oldSelf.hasValue() || !has(oldSelf.value().spec.minAvailable) || oldSelf.value().spec.minAvailable <= 0 || (has(self.spec.minAvailable) && self.spec.minAvailable == oldSelf.value().spec.minAvailable)",message="spec.minAvailable is immutable once positive",fieldPath=".spec.minAvailable",optionalOldSelf=true
 // +kubebuilder:subresource:status
 // +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.hpaPodSelector
 // +kubebuilder:resource:shortName={pclq}
@@ -57,18 +59,27 @@ type PodCliqueList struct {
 }
 
 // PodCliqueSpec defines the specification of a PodClique.
+// GREP-0677: replicas must be 0 (intentional idle state) or at least minAvailable; positive
+// below-quorum values are rejected. Legacy objects may update unrelated fields while
+// replicas and minAvailable stay unchanged. This also validates the scale subresource.
+// +kubebuilder:validation:XValidation:rule="self.replicas == 0 || !has(self.minAvailable) || self.replicas >= self.minAvailable || (oldSelf.hasValue() && self.replicas == oldSelf.value().replicas && has(oldSelf.value().minAvailable) && self.minAvailable == oldSelf.value().minAvailable)",message="spec.replicas must be 0 (idle) or greater than or equal to spec.minAvailable",optionalOldSelf=true
 type PodCliqueSpec struct {
 	// RoleName is the name of the role that this PodClique will assume.
 	RoleName string `json:"roleName"`
 	// Spec is the spec of the pods in the clique.
 	PodSpec corev1.PodSpec `json:"podSpec"`
-	// Replicas is the number of replicas of the pods in the clique. It cannot be less than 1.
+	// Replicas is the number of replicas of the pods in the clique. GREP-0677: it is either 0
+	// (an intentional idle state) or at least MinAvailable. When omitted it defaults to 1; an
+	// explicit 0 is preserved.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=0
 	Replicas int32 `json:"replicas"`
 	// MinAvailable serves two purposes:
 	// 1. It defines the minimum number of pods that are guaranteed to be gang scheduled.
 	// 2. It defines the minimum requirement of available pods in a PodClique. Violation of this threshold will result
-	// in termination of the PodGang that it belongs to. If MinAvailable is not set, then it will default to the template
-	// Replicas.
+	// in termination of the PodGang that it belongs to. On creation, an omitted MinAvailable defaults to
+	// max(1, Replicas). A positive MinAvailable is immutable and remains positive during hibernation.
+	// Legacy objects with an absent or non-positive value may explicitly set a valid positive minimum.
 	// +optional
 	MinAvailable *int32 `json:"minAvailable,omitempty"`
 	// StartsAfter provides you a way to explicitly define the startup dependencies amongst cliques.

@@ -64,7 +64,7 @@ func TestNewRegistry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cl := testutils.CreateDefaultFakeClient(nil)
+			cl := schedulertest.NewKAIClient(t, schedulertest.NewKAIPodGroupCRD())
 			recorder := record.NewFakeRecorder(10)
 
 			cfg := configv1alpha1.SchedulerConfiguration{
@@ -92,7 +92,7 @@ func TestNewRegistry(t *testing.T) {
 	}
 
 	t.Run("multiple profiles with default set to kai", func(t *testing.T) {
-		cl := schedulertest.NewVolcanoClient(t, testutils.NewVolcanoPodGroupCRD(true))
+		cl := schedulertest.NewVolcanoClient(t, testutils.NewVolcanoPodGroupCRD(true), schedulertest.NewKAIPodGroupCRD())
 		recorder := record.NewFakeRecorder(10)
 		cfg := configv1alpha1.SchedulerConfiguration{
 			Profiles: []configv1alpha1.SchedulerProfile{

@@ -102,6 +102,23 @@ func ScaleOutPCSGReplicaIndicesCheckFn(pcsgName string, want []int32) Check {
 	}
 }
 
+// PCSGReplicaIndicesCheckFn verifies exact membership across all entries, regardless of placement.
+func PCSGReplicaIndicesCheckFn(pcsgName string, want []int32) Check {
+	want = slices.Clone(want)
+	slices.Sort(want)
+	return func(pgm *grovecorev1alpha1.PodGangMap) error {
+		var got []int32
+		for _, entry := range pgm.Spec.Entries {
+			got = append(got, entry.PCSGReplicaIndices[pcsgName]...)
+		}
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			return fmt.Errorf("PodCliqueScalingGroup %q replica indices = %v, want %v", pcsgName, got, want)
+		}
+		return nil
+	}
+}
+
 // AnchorStandalonePodCliqueCountCheckFn returns a Check that verifies the anchor entry carries the
 // wanted pod count for the given standalone PodClique.
 func AnchorStandalonePodCliqueCountCheckFn(cliqueName string, want int32) Check {
