@@ -275,7 +275,7 @@ func computeMinAvailableBreachedCondition(pcsg *grovecorev1alpha1.PodCliqueScali
 	}
 	reason := constants.ConditionReasonInsufficientAvailablePCSGReplicas
 	message := fmt.Sprintf("Available replicas (%d) below MinAvailable (%d)", pcsg.Status.AvailableReplicas, minAvailable)
-	if !componentutils.IsMinAvailableBreachArmed(pcsg.Status.Conditions, pcsg.Generation) {
+	if !componentutils.HasObservedMinAvailable(pcsg.Status.Conditions, pcsg.Generation) {
 		reason = constants.ConditionReasonInitialScheduling
 		message = fmt.Sprintf("Waiting for at least %d available replicas before enabling gang termination", minAvailable)
 	}

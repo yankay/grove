@@ -251,7 +251,7 @@ func computeMinAvailableBreachedCondition(pclq *grovecorev1alpha1.PodClique, num
 	minAvailable := int(*pclq.Spec.MinAvailable)
 	scheduledReplicas := int(pclq.Status.ScheduledReplicas)
 	now := metav1.Now()
-	armed := componentutils.IsMinAvailableBreachArmed(pclq.Status.Conditions, pclq.Generation)
+	armed := componentutils.HasObservedMinAvailable(pclq.Status.Conditions, pclq.Generation)
 	if pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable {
 		return metav1.Condition{
 			Type:               constants.ConditionTypeMinAvailableBreached,

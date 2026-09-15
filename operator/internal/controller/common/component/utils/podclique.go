@@ -94,8 +94,17 @@ func GroupPCLQsByPCSReplicaIndex(pclqs []grovecorev1alpha1.PodClique) (map[int][
 	return grouped, nil
 }
 
-// IsMinAvailableBreachArmed reports whether the current generation has observed a healthy state.
-// Initial scheduling, idle, and update states deliberately reset the latch.
+// HasObservedMinAvailable retains observed health across scaling generations.
+// Idle, update, and recovery reasons reset this history; legacy conditions without
+// an observed generation cannot establish it.
+func HasObservedMinAvailable(conditions []metav1.Condition, generation int64) bool {
+	cond := meta.FindStatusCondition(conditions, constants.ConditionTypeMinAvailableBreached)
+	return cond != nil && cond.ObservedGeneration > 0 && cond.ObservedGeneration <= generation &&
+		IsMinAvailableBreachArmed(conditions, cond.ObservedGeneration)
+}
+
+// IsMinAvailableBreachArmed requires health history reconciled for the current
+// generation before a breach can trigger gang termination.
 func IsMinAvailableBreachArmed(conditions []metav1.Condition, generation int64) bool {
 	cond := meta.FindStatusCondition(conditions, constants.ConditionTypeMinAvailableBreached)
 	if cond == nil || cond.ObservedGeneration != generation {
