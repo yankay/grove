@@ -24,12 +24,16 @@ import (
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/e2e/grove/podgroup"
-	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
+	"github.com/ai-dynamo/grove/operator/e2e/grove/workload"
 
+	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -191,4 +195,78 @@ func Test_ZR12_ReconstructIdleTargetsAndMembership(t *testing.T) {
 	waitForPodCountAndReady(t, tc, 3)
 	waitForStandaloneMembership(t, ctx, tc, pcsName, "guarded", 2)
 	assertRetainedPodLocation(t, podsForClique(t, tc, pcsName+"-0-worker"), survivors)
+}
+
+func Test_ZR13_StaleScaleWriterPreservesAcceptedIntent(t *testing.T) {
+	for _, kind := range []string{"PodClique", "PodCliqueScalingGroup"} {
+		t.Run(kind, func(t *testing.T) {
+			const pcsName = "zero-scale-conflict"
+			ctx := context.Background()
+			tc, cleanup := prepareIdleWorkload(t, ctx, 6, pcsName, 1, func(pcs *grovecorev1alpha1.PodCliqueSet) {
+				idlePCSGConfig(t, pcs).MinAvailable = ptr.To(int32(2))
+			})
+			defer cleanup()
+			waitForPodCountAndReady(t, tc, 1)
+			var target client.Object
+			memberCount := 1
+			if kind == "PodClique" {
+				target = waitForPCLQ(t, ctx, tc, pcsName+"-0-guarded")
+			} else {
+				target = &grovecorev1alpha1.PodCliqueScalingGroup{ObjectMeta: metav1.ObjectMeta{
+					Name: pcsName + "-0-workers", Namespace: tc.Namespace,
+				}}
+				if err := tc.Client.Get(ctx, client.ObjectKeyFromObject(target), target); err != nil {
+					t.Fatal(err)
+				}
+				memberCount = 2
+			}
+			survivors := podUIDLocations(podsForClique(t, tc, pcsName+"-0-worker"))
+			wm := workload.NewWorkloadManager(tc.Client, Logger)
+			for _, accepted := range []int32{2, 0} {
+				staleTarget := 2 - accepted
+				updateScale(t, ctx, tc, target, staleTarget)
+				waitForPodCountAndReady(t, tc, 1+int(staleTarget)*memberCount)
+				stale := &autoscalingv1.Scale{}
+				if err := tc.Client.SubResource("scale").Get(ctx, target, stale); err != nil {
+					t.Fatal(err)
+				}
+				if stale.ResourceVersion == "" {
+					t.Fatal("scale read omitted the optimistic concurrency token")
+				}
+				updateScale(t, ctx, tc, target, accepted)
+				stale.Spec.Replicas = staleTarget
+				err := tc.Client.SubResource("scale").Update(ctx, target, client.WithSubResourceBody(stale))
+				if !apierrors.IsConflict(err) {
+					t.Fatalf("stale %d-replica write after accepted %d: want Conflict, got %v", staleTarget, accepted, err)
+				}
+				restartOperator(t, ctx, tc)
+				waitForPodCountAndReady(t, tc, 1+int(accepted)*memberCount)
+				assertScaleStatus(t, ctx, tc, target, accepted, true)
+				assertRetainedPodLocation(t, podsForClique(t, tc, pcsName+"-0-worker"), survivors)
+				// A writer must refetch after Conflict; a fresh valid write is
+				// still allowed to change the accepted runtime intent.
+				if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+					current := &autoscalingv1.Scale{}
+					if err := tc.Client.SubResource("scale").Get(ctx, target, current); err != nil {
+						return err
+					}
+					current.Spec.Replicas = staleTarget
+					return tc.Client.SubResource("scale").Update(ctx, target, client.WithSubResourceBody(current))
+				}); err != nil {
+					t.Fatalf("refetched scale write did not recover from Conflict: %v", err)
+				}
+				if err := wm.WaitForScaleReplicas(ctx, target, staleTarget, tc.Timeout, tc.Interval); err != nil {
+					t.Fatal(err)
+				}
+				waitForPodCountAndReady(t, tc, 1+int(staleTarget)*memberCount)
+				current := target.DeepCopyObject().(client.Object)
+				if err := tc.Client.Get(ctx, client.ObjectKeyFromObject(target), current); err != nil {
+					t.Fatal(err)
+				}
+				if current.GetUID() != target.GetUID() {
+					t.Fatal("scale conflict or operator restart replaced the target")
+				}
+			}
+		})
+	}
 }
