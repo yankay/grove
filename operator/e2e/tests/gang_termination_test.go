@@ -25,13 +25,16 @@ import (
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	apiconstants "github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
+	"github.com/ai-dynamo/grove/operator/e2e/grove/workload"
 	"github.com/ai-dynamo/grove/operator/e2e/testctx"
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -391,7 +394,15 @@ func Test_GT7_FirstWakeArmsTerminationOnlyAfterHealthy(t *testing.T) {
 		t.Fatalf("Failed to wake PodClique: %v", err)
 	}
 	waitForPCLQConditionReason(t, ctx, tc, workerName, apiconstants.ConditionReasonInitialScheduling)
-	assertPCLQUIDStableFor(t, ctx, tc, workerName, initialUID, terminationDelayInWorkloadYAML+gangTerminationGrace)
+	pendingPods, err := tc.WaitForPodCount(1)
+	if err != nil {
+		t.Fatalf("First wake did not create its pending Pod: %v", err)
+	}
+	pendingUIDs := sets.New[types.UID](pendingPods.Items[0].UID)
+	wm := workload.NewWorkloadManager(tc.Client, Logger)
+	assertStableFor(t, ctx, terminationDelayInWorkloadYAML+gangTerminationGrace, func(ctx context.Context) error {
+		return wm.VerifyNoGangRecovery(ctx, worker, pendingUIDs)
+	})
 
 	tc.UncordonNodes(cordoned)
 	if err := tc.WaitForReadyPods(1); err != nil {
@@ -452,28 +463,6 @@ func waitForPCLQConditionReason(t *testing.T, ctx context.Context, tc *testctx.T
 		return condition != nil && condition.Reason == reason && condition.ObservedGeneration == pclq.Generation, nil
 	}); err != nil {
 		t.Fatalf("PodClique %s condition did not reach reason %s: %v", name, reason, err)
-	}
-}
-
-func assertPCLQUIDStableFor(t *testing.T, ctx context.Context, tc *testctx.TestContext, name string, uid types.UID, duration time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(duration)
-	for {
-		pclq := &grovecorev1alpha1.PodClique{}
-		if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: name}, pclq); err != nil {
-			t.Fatalf("PodClique %s disappeared before gang termination was armed: %v", name, err)
-		}
-		if pclq.UID != uid {
-			t.Fatalf("PodClique %s UID changed before gang termination was armed: %s -> %s", name, uid, pclq.UID)
-		}
-		if time.Now().After(deadline) {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-time.After(500 * time.Millisecond):
-		}
 	}
 }
 
