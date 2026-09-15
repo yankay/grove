@@ -60,6 +60,7 @@ func TestSetup(t *testing.T) {
 
 	require.NoError(t, Setup(mgr, operatorCfg))
 	require.ElementsMatch(t, []string{
+		"/webhooks/default-podclique",
 		"/webhooks/default-podcliqueset",
 		"/webhooks/validate-clustertopology",
 		"/webhooks/validate-podclique",

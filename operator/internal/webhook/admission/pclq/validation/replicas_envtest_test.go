@@ -16,6 +16,7 @@ package validation
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -23,6 +24,7 @@ import (
 
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	operatorcrds "github.com/ai-dynamo/grove/operator/api/core/v1alpha1/crds"
+	pclqdefaulting "github.com/ai-dynamo/grove/operator/internal/webhook/admission/pclq/defaulting"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 
 	"github.com/stretchr/testify/require"
@@ -32,7 +34,9 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -54,6 +58,22 @@ func TestMemberScaleAdmission(t *testing.T) {
 		ControlPlaneStopTimeout:  admissionTimeout,
 		WebhookInstallOptions: envtest.WebhookInstallOptions{
 			MaxTime: admissionTimeout, PollInterval: pollInterval,
+			MutatingWebhooks: []*admissionv1.MutatingWebhookConfiguration{{
+				ObjectMeta: metav1.ObjectMeta{Name: "pclq-minimum-defaulting"},
+				Webhooks: []admissionv1.MutatingWebhook{{
+					Name: "pclq.defaulting.webhooks.grove.io", AdmissionReviewVersions: []string{"v1"},
+					SideEffects: ptr.To(admissionv1.SideEffectClassNone), FailurePolicy: ptr.To(admissionv1.Fail),
+					ClientConfig: admissionv1.WebhookClientConfig{Service: &admissionv1.ServiceReference{
+						Path: ptr.To("webhooks/default-podclique"),
+					}},
+					Rules: []admissionv1.RuleWithOperations{{
+						Operations: []admissionv1.OperationType{admissionv1.Create},
+						Rule: admissionv1.Rule{
+							APIGroups: []string{"grove.io"}, APIVersions: []string{"v1alpha1"}, Resources: []string{"podcliques"},
+						},
+					}},
+				}},
+			}},
 			ValidatingWebhooks: []*admissionv1.ValidatingWebhookConfiguration{{
 				ObjectMeta: metav1.ObjectMeta{Name: "member-replica-validation"},
 				Webhooks: []admissionv1.ValidatingWebhook{{
@@ -95,6 +115,7 @@ func TestMemberScaleAdmission(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, NewHandler(mgr).RegisterWithManager(mgr))
+	require.NoError(t, pclqdefaulting.NewHandler().RegisterWithManager(mgr))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- mgr.Start(ctx) }()
@@ -166,4 +187,57 @@ func TestMemberScaleAdmission(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("direct PodClique minimum", func(t *testing.T) {
+		omitted := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "grove.io/v1alpha1", "kind": "PodClique",
+			"metadata": map[string]interface{}{"name": "omitted-replicas", "namespace": "default"},
+			"spec": map[string]interface{}{"roleName": "worker", "podSpec": map[string]interface{}{
+				"containers": []interface{}{map[string]interface{}{"name": "worker", "image": "test:v1"}},
+			}},
+		}}
+		require.NoError(t, cl.Create(ctx, omitted))
+		for _, field := range []string{"replicas", "minAvailable"} {
+			value, found, err := unstructured.NestedInt64(omitted.Object, "spec", field)
+			require.NoError(t, err)
+			require.True(t, found)
+			require.EqualValues(t, 1, value)
+		}
+		for _, replicas := range []int32{0, 1, 3} {
+			t.Run(fmt.Sprintf("replicas=%d", replicas), func(t *testing.T) {
+				pclq := testutils.NewPodCliqueBuilder("pcs", "pcs-uid", fmt.Sprintf("minimum-%d", replicas), "default", 0).
+					WithReplicas(replicas).Build()
+				pclq.Spec.MinAvailable = nil
+				require.NoError(t, cl.Create(ctx, pclq))
+				require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pclq), pclq))
+				require.NotNil(t, pclq.Spec.MinAvailable)
+				require.Equal(t, max(int32(1), replicas), *pclq.Spec.MinAvailable)
+				require.Equal(t, replicas, pclq.Spec.Replicas)
+				increasedFields := []string{"spec.minAvailable"}
+				if replicas > 0 {
+					increasedFields = append(increasedFields, "spec")
+				}
+				for _, rejection := range []struct {
+					patch  string
+					fields []string
+				}{
+					{`{"spec":{"minAvailable":0}}`, []string{"spec.minAvailable", "spec.minAvailable"}},
+					{`{"spec":{"minAvailable":-1}}`, []string{"spec.minAvailable", "spec.minAvailable"}},
+					{`{"spec":{"minAvailable":null}}`, []string{"spec.minAvailable", "spec.minAvailable"}},
+					{fmt.Sprintf(`{"spec":{"minAvailable":%d}}`, *pclq.Spec.MinAvailable+1), increasedFields},
+				} {
+					err := cl.Patch(ctx, pclq.DeepCopy(), client.RawPatch(types.MergePatchType, []byte(rejection.patch)))
+					var statusErr *apierrors.StatusError
+					require.ErrorAs(t, err, &statusErr)
+					require.Equal(t, metav1.StatusReasonInvalid, statusErr.ErrStatus.Reason)
+					var fields []string
+					for _, cause := range statusErr.ErrStatus.Details.Causes {
+						require.Equal(t, metav1.CauseTypeFieldValueInvalid, cause.Type)
+						fields = append(fields, cause.Field)
+					}
+					require.ElementsMatch(t, rejection.fields, fields)
+				}
+			})
+		}
+	})
 }
