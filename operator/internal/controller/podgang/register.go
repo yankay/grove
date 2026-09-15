@@ -16,6 +16,7 @@ package podgang
 
 import (
 	grovectrlutils "github.com/ai-dynamo/grove/operator/internal/controller/utils"
+	"github.com/ai-dynamo/grove/operator/internal/scheduler"
 
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -27,13 +28,21 @@ import (
 
 // RegisterWithManager registers the backend controller with the manager
 func (r *Reconciler) RegisterWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&groveschedulerv1alpha1.PodGang{}, builder.WithPredicates(podGangSpecChangePredicate())).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: *r.config.ConcurrentSyncs,
 		}).
-		Named("podgang").
-		Complete(r)
+		Named("podgang")
+
+	for _, backend := range r.schedRegistry.All() {
+		if resourceBackend, ok := backend.(scheduler.PodGangResourceBackend); ok {
+			for _, resource := range resourceBackend.PodGangResources() {
+				b = b.Owns(resource)
+			}
+		}
+	}
+	return b.Complete(r)
 }
 
 // podGangSpecChangePredicate filters PodGang events to only process spec changes

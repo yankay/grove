@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
@@ -48,7 +49,12 @@ type schedulerBackend struct {
 	gangSchedulingEnabled bool
 }
 
-var _ scheduler.Backend = (*schedulerBackend)(nil)
+var (
+	_ scheduler.Backend                = (*schedulerBackend)(nil)
+	_ scheduler.PodGangResourceBackend = (*schedulerBackend)(nil)
+)
+
+const workloadAPICheckTimeout = 30 * time.Second
 
 // New creates a new Kube backend instance. profile is the scheduler profile for default-scheduler;
 // schedulerBackend uses profile.Name and unmarshals profile.Config into KubeSchedulerConfig.
@@ -70,7 +76,8 @@ func (b *schedulerBackend) Name() string {
 // Init initializes the Kube backend. When gang scheduling is enabled in the
 // profile config, it registers the upstream scheduling API types into the
 // scheme and verifies that the cluster serves the Workload-Aware Scheduling
-// APIs; missing capabilities fail closed.
+// APIs; missing capabilities fail startup without fallback. Init must finish
+// before the manager starts using the shared scheme.
 func (b *schedulerBackend) Init(directClient client.Client) error {
 	kubeSchedulerConfig, err := b.parseKubeSchedulerConfig()
 	if err != nil {
@@ -88,7 +95,7 @@ func (b *schedulerBackend) Init(directClient client.Client) error {
 	}
 
 	if err := verifyWorkloadAPIsServed(directClient); err != nil {
-		return fmt.Errorf("default-scheduler gang scheduling requires the Kubernetes Workload-Aware Scheduling APIs (Kubernetes >= 1.37 with the GenericWorkload feature gate enabled on kube-apiserver, kube-scheduler, and kube-controller-manager, plus the CompositePodGroup and TopologyAwareWorkloadScheduling feature gates enabled on kube-apiserver and kube-scheduler): %w", err)
+		return fmt.Errorf("default-scheduler gang scheduling requires the Kubernetes Workload-Aware Scheduling APIs (Kubernetes >= 1.37 with the GenericWorkload feature gate enabled on kube-apiserver, kube-scheduler, and kube-controller-manager, plus the CompositePodGroup and TopologyAwareWorkloadScheduling feature gates enabled on kube-apiserver and kube-scheduler); enable these prerequisites or disable config.gangScheduling on the default-scheduler profile: %w", err)
 	}
 	b.gangSchedulingEnabled = true
 	return nil
@@ -107,25 +114,43 @@ func (b *schedulerBackend) parseKubeSchedulerConfig() (*configv1alpha1.KubeSched
 }
 
 // verifyWorkloadAPIsServed checks that the Workload-Aware Scheduling API
-// resources are actually served by the cluster, by listing each of them.
+// resources are accessible through the direct client before the manager starts.
+// Serving CompositePodGroup also requires GenericWorkload and
+// TopologyAwareWorkloadScheduling on kube-apiserver. Scheduler and
+// controller-manager feature gates must be configured by the administrator.
 func verifyWorkloadAPIsServed(directClient client.Client) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), workloadAPICheckTimeout)
+	defer cancel()
 	limit := client.Limit(1)
 	if err := directClient.List(ctx, &schedulingv1beta1.WorkloadList{}, limit); err != nil {
-		return fmt.Errorf("%s Workload API is not served: %w", schedulingv1beta1.SchemeGroupVersion.String(), err)
+		return fmt.Errorf("cannot access %s Workload API: %w", schedulingv1beta1.SchemeGroupVersion.String(), err)
 	}
 	if err := directClient.List(ctx, &schedulingv1beta1.PodGroupList{}, limit); err != nil {
-		return fmt.Errorf("%s PodGroup API is not served: %w", schedulingv1beta1.SchemeGroupVersion.String(), err)
+		return fmt.Errorf("cannot access %s PodGroup API: %w", schedulingv1beta1.SchemeGroupVersion.String(), err)
 	}
 	if err := directClient.List(ctx, &schedulingv1alpha3.CompositePodGroupList{}, limit); err != nil {
-		return fmt.Errorf("%s CompositePodGroup API is not served: %w", schedulingv1alpha3.SchemeGroupVersion.String(), err)
+		return fmt.Errorf("cannot access %s CompositePodGroup API: %w", schedulingv1alpha3.SchemeGroupVersion.String(), err)
 	}
 	return nil
 }
 
+// PodGangResources enables owner watches only when the WAS backend is active.
+func (b *schedulerBackend) PodGangResources() []client.Object {
+	if !b.gangSchedulingEnabled {
+		return nil
+	}
+	return []client.Object{
+		&schedulingv1beta1.Workload{},
+		&schedulingv1alpha3.CompositePodGroup{},
+		&schedulingv1beta1.PodGroup{},
+	}
+}
+
 // SyncPodGang synchronizes scheduler resources for a PodGang. Without gang
 // scheduling it is a no-op. With gang scheduling it translates the PodGang
-// into an upstream Workload / CompositePodGroup / PodGroup hierarchy.
+// into an upstream Workload / CompositePodGroup / PodGroup hierarchy. The
+// scheduler owns runtime group status; Grove's PodCliqueSet reconciler derives
+// PodGang conditions from member Pods, as with the KAI and Volcano backends.
 func (b *schedulerBackend) SyncPodGang(ctx context.Context, podGang *groveschedulerv1alpha1.PodGang) error {
 	if !b.gangSchedulingEnabled {
 		return nil

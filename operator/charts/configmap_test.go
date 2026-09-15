@@ -15,12 +15,17 @@
 package charts_test
 
 import (
+	"slices"
 	"testing"
 
+	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
+
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -70,24 +75,79 @@ func TestSchedulerProfileConfigRendersNested(t *testing.T) {
 		"gangScheduling must nest under profiles[].config so the backend enables gang scheduling")
 }
 
+func TestDefaultSchedulerGangSchedulingDisabledByDefault(t *testing.T) {
+	configMap := renderOperatorConfig(t, nil)
+	data, err := yaml.Marshal(configMap)
+	require.NoError(t, err)
+	var config configv1alpha1.OperatorConfiguration
+	require.NoError(t, yaml.Unmarshal(data, &config))
+	var found bool
+	for _, profile := range config.Scheduler.Profiles {
+		if profile.Name != configv1alpha1.SchedulerNameKube {
+			continue
+		}
+		found = true
+		var kubeConfig configv1alpha1.KubeSchedulerConfig
+		if profile.Config != nil {
+			require.NoError(t, yaml.Unmarshal(profile.Config.Raw, &kubeConfig))
+		}
+		assert.False(t, kubeConfig.GangScheduling)
+	}
+	require.True(t, found, "default-scheduler profile must remain available")
+}
+
+func TestDefaultSchedulerGangSchedulingRBAC(t *testing.T) {
+	tests := []struct {
+		name     string
+		profiles []interface{}
+		enabled  bool
+	}{
+		{name: "chart defaults"},
+		{
+			name:     "disabled kube profile",
+			profiles: []interface{}{map[string]interface{}{"name": "default-scheduler", "config": map[string]interface{}{"gangScheduling": false}}},
+		},
+		{
+			name:     "enabled kube profile",
+			profiles: []interface{}{map[string]interface{}{"name": "default-scheduler", "config": map[string]interface{}{"gangScheduling": true}}},
+			enabled:  true,
+		},
+		{
+			name:     "other backend config does not enable WAS",
+			profiles: []interface{}{map[string]interface{}{"name": "kai-scheduler", "config": map[string]interface{}{"gangScheduling": true}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			values := map[string]interface{}{}
+			if tt.profiles != nil {
+				values["config"] = map[string]interface{}{"scheduler": map[string]interface{}{"profiles": tt.profiles}}
+			}
+			manifests := renderChart(t, values)
+			var role rbacv1.ClusterRole
+			require.NoError(t, yaml.Unmarshal([]byte(manifests["grove-charts/templates/clusterrole.yaml"]), &role))
+			var rules []rbacv1.PolicyRule
+			for _, rule := range role.Rules {
+				if slices.Contains(rule.APIGroups, "scheduling.k8s.io") {
+					rules = append(rules, rule)
+				}
+			}
+			if !tt.enabled {
+				assert.Empty(t, rules)
+				return
+			}
+			require.Len(t, rules, 1)
+			assert.ElementsMatch(t, []string{"workloads", "podgroups", "compositepodgroups"}, rules[0].Resources)
+			assert.ElementsMatch(t, []string{"create", "get", "list", "watch", "patch", "update", "delete", "deletecollection"}, rules[0].Verbs)
+		})
+	}
+}
+
 // renderOperatorConfig renders the operator ConfigMap and returns the parsed
 // config.yaml document.
 func renderOperatorConfig(t *testing.T, values map[string]interface{}) map[string]interface{} {
 	t.Helper()
-
-	chart, err := loader.Load(".")
-	require.NoError(t, err)
-
-	renderValues, err := chartutil.ToRenderValues(
-		chart,
-		values,
-		chartutil.ReleaseOptions{Name: "grove", Namespace: "default", IsInstall: true},
-		chartutil.DefaultCapabilities,
-	)
-	require.NoError(t, err)
-
-	manifests, err := engine.Render(chart, renderValues)
-	require.NoError(t, err)
+	manifests := renderChart(t, values)
 
 	configMapYAML, ok := manifests["grove-charts/templates/configmap-operator.yaml"]
 	require.True(t, ok, "configmap-operator.yaml must render")
@@ -102,4 +162,20 @@ func renderOperatorConfig(t *testing.T, values map[string]interface{}) map[strin
 	operatorConfig := map[string]interface{}{}
 	require.NoError(t, yaml.Unmarshal([]byte(configMap.Data.ConfigYAML), &operatorConfig))
 	return operatorConfig
+}
+
+func renderChart(t *testing.T, values map[string]interface{}) map[string]string {
+	t.Helper()
+	chart, err := loader.Load(".")
+	require.NoError(t, err)
+	renderValues, err := chartutil.ToRenderValues(
+		chart,
+		values,
+		chartutil.ReleaseOptions{Name: "grove", Namespace: "default", IsInstall: true},
+		chartutil.DefaultCapabilities,
+	)
+	require.NoError(t, err)
+	manifests, err := engine.Render(chart, renderValues)
+	require.NoError(t, err)
+	return manifests
 }

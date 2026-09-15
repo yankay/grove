@@ -52,6 +52,14 @@ type Backend interface {
 	ValidatePodCliqueSet(ctx context.Context, pcs *grovecorev1alpha1.PodCliqueSet) error
 }
 
+// PodGangResourceBackend optionally exposes the scheduling resources controlled
+// by PodGangs so the PodGang controller can reconcile changes and deletions.
+type PodGangResourceBackend interface {
+	// PodGangResources returns registered object types after Init has completed.
+	// Disabled capabilities must not return types whose APIs may be unavailable.
+	PodGangResources() []client.Object
+}
+
 // TopologyAwareBackend is an optional interface that Backend
 // implementations may satisfy if they manage a scheduler-specific topology CRD.
 // The ClusterTopologyBinding controller type-asserts each registered backend to this
