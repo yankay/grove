@@ -23,6 +23,8 @@ import (
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:object:root=true
+// +kubebuilder:validation:XValidation:rule="has(self.spec.minAvailable) ? self.spec.minAvailable > 0 || (oldSelf.hasValue() && has(oldSelf.value().spec.minAvailable) && self.spec.minAvailable == oldSelf.value().spec.minAvailable) : oldSelf.hasValue() && !has(oldSelf.value().spec.minAvailable)",message="spec.minAvailable must be set to a positive value",fieldPath=".spec.minAvailable",optionalOldSelf=true
+// +kubebuilder:validation:XValidation:rule="!oldSelf.hasValue() || !has(oldSelf.value().spec.minAvailable) || oldSelf.value().spec.minAvailable <= 0 || (has(self.spec.minAvailable) && self.spec.minAvailable == oldSelf.value().spec.minAvailable)",message="spec.minAvailable is immutable once positive",fieldPath=".spec.minAvailable",optionalOldSelf=true
 // +kubebuilder:subresource:status
 // +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.hpaPodSelector
 // +kubebuilder:resource:shortName={pclq}
@@ -76,8 +78,9 @@ type PodCliqueSpec struct {
 	// MinAvailable serves two purposes:
 	// 1. It defines the minimum number of pods that are guaranteed to be gang scheduled.
 	// 2. It defines the minimum requirement of available pods in a PodClique. Violation of this threshold will result
-	// in termination of the PodGang that it belongs to. If MinAvailable is not set, then it will default to the template
-	// Replicas.
+	// in termination of the PodGang that it belongs to. On creation, an omitted MinAvailable defaults to
+	// max(1, Replicas). A positive MinAvailable is immutable and remains positive during hibernation.
+	// Legacy objects with an absent or non-positive value may explicitly set a valid positive minimum.
 	// +optional
 	MinAvailable *int32 `json:"minAvailable,omitempty"`
 	// StartsAfter provides you a way to explicitly define the startup dependencies amongst cliques.

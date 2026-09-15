@@ -54,3 +54,31 @@ func TestPodCliqueValidationWebhook(t *testing.T) {
 	assert.Equal(t, []string{"podcliques", "podcliques/scale"}, webhook.Rules[0].Resources)
 	assert.Equal(t, []admissionregistrationv1.OperationType{admissionregistrationv1.Update}, webhook.Rules[0].Operations)
 }
+
+func TestPodCliqueDefaultingWebhook(t *testing.T) {
+	chart, err := loader.Load(".")
+	require.NoError(t, err)
+	values, err := chartutil.ToRenderValues(chart, nil,
+		chartutil.ReleaseOptions{Name: "grove", Namespace: "default", IsInstall: true}, chartutil.DefaultCapabilities)
+	require.NoError(t, err)
+	manifests, err := engine.Render(chart, values)
+	require.NoError(t, err)
+	config := &admissionregistrationv1.MutatingWebhookConfiguration{}
+	require.NoError(t, yaml.UnmarshalStrict([]byte(manifests["grove-charts/templates/pcs-defaulting-webhook-config.yaml"]), config))
+	var found bool
+	for _, hook := range config.Webhooks {
+		if hook.Name != "pclq.defaulting.webhooks.grove.io" {
+			continue
+		}
+		found = true
+		require.NotNil(t, hook.ClientConfig.Service)
+		require.NotNil(t, hook.ClientConfig.Service.Path)
+		assert.Equal(t, "/webhooks/default-podclique", *hook.ClientConfig.Service.Path)
+		require.Len(t, hook.Rules, 1)
+		assert.Equal(t, []string{"podcliques"}, hook.Rules[0].Resources)
+		assert.Equal(t, []admissionregistrationv1.OperationType{admissionregistrationv1.Create}, hook.Rules[0].Operations)
+		require.NotNil(t, hook.FailurePolicy)
+		assert.Equal(t, admissionregistrationv1.Fail, *hook.FailurePolicy)
+	}
+	require.True(t, found, "PodClique creation must reach the defaulting handler")
+}

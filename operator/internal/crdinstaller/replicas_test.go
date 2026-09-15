@@ -17,6 +17,7 @@ package crdinstaller_test
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -97,6 +98,7 @@ func TestReplicaValidationUpgrade(t *testing.T) {
 			require.NoError(t, yaml.Unmarshal([]byte(tc.crd), currentCRD))
 			legacyCRD := currentCRD.DeepCopy()
 			// Model the pre-validation API without snapshotting a historical CRD.
+			legacyCRD.Spec.Versions[0].Schema.OpenAPIV3Schema.XValidations = nil
 			specSchema := legacyCRD.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
 			specSchema.XValidations = nil
 			legacyCRD.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"] = specSchema
@@ -110,6 +112,27 @@ func TestReplicaValidationUpgrade(t *testing.T) {
 			}}
 			require.NoError(t, cl.Create(ctx, legacy))
 			uid := legacy.GetUID()
+			var legacyMinima []*unstructured.Unstructured
+			for _, minimum := range []int64{-1, 0} {
+				obj := legacy.DeepCopy()
+				obj.SetName("minimum-" + strconv.FormatInt(minimum+1, 10))
+				obj.SetResourceVersion("")
+				obj.SetUID("")
+				require.NoError(t, unstructured.SetNestedField(obj.Object, int64(3), "spec", "replicas"))
+				require.NoError(t, unstructured.SetNestedField(obj.Object, minimum, "spec", "minAvailable"))
+				require.NoError(t, cl.Create(ctx, obj))
+				legacyMinima = append(legacyMinima, obj)
+			}
+			if tc.kind == "PodClique" {
+				obj := legacy.DeepCopy()
+				obj.SetName("minimum-missing")
+				obj.SetResourceVersion("")
+				obj.SetUID("")
+				require.NoError(t, unstructured.SetNestedField(obj.Object, int64(3), "spec", "replicas"))
+				unstructured.RemoveNestedField(obj.Object, "spec", "minAvailable")
+				require.NoError(t, cl.Create(ctx, obj))
+				legacyMinima = append(legacyMinima, obj)
+			}
 			require.NoError(t, crdinstaller.InstallCRDs(ctx, cl, logr.Discard(), []string{tc.crd}))
 			probe := legacy.DeepCopy()
 			probe.SetName("invalid-create")
@@ -142,8 +165,15 @@ func TestReplicaValidationUpgrade(t *testing.T) {
 					var statusErr *apierrors.StatusError
 					require.ErrorAs(t, cl.Update(ctx, candidate), &statusErr)
 					require.Equal(t, metav1.StatusReasonInvalid, statusErr.ErrStatus.Reason)
-					require.Len(t, statusErr.ErrStatus.Details.Causes, 1)
-					require.Equal(t, "spec", statusErr.ErrStatus.Details.Causes[0].Field)
+					fields := []string{"spec"}
+					if field == "minAvailable" {
+						fields = append(fields, "spec.minAvailable")
+					}
+					var gotFields []string
+					for _, cause := range statusErr.ErrStatus.Details.Causes {
+						gotFields = append(gotFields, cause.Field)
+					}
+					require.ElementsMatch(t, fields, gotFields)
 				})
 			}
 			require.True(t, apierrors.IsInvalid(cl.SubResource("scale").Patch(ctx, legacy,
@@ -176,6 +206,51 @@ func TestReplicaValidationUpgrade(t *testing.T) {
 					require.True(t, apierrors.IsInvalid(cl.SubResource("scale").Patch(ctx, legacy,
 						client.RawPatch(types.MergePatchType, []byte(`{"spec":{"replicas":2}}`)))))
 				}
+			}
+			for _, obj := range legacyMinima {
+				t.Run(obj.GetName(), func(t *testing.T) {
+					minimum, found, err := unstructured.NestedInt64(obj.Object, "spec", "minAvailable")
+					require.NoError(t, err)
+					probe := obj.DeepCopy()
+					probe.SetName("new-invalid-minimum")
+					probe.SetResourceVersion("")
+					probe.SetUID("")
+					require.True(t, apierrors.IsInvalid(cl.Create(ctx, probe, client.DryRunAll)),
+						"new missing or non-positive minima must be rejected without defaulting")
+					obj.SetFinalizers([]string{"test.grove.io/hold"})
+					require.NoError(t, cl.Update(ctx, obj))
+					require.NoError(t, unstructured.SetNestedField(obj.Object, tc.newValue, tc.path...))
+					require.NoError(t, cl.Update(ctx, obj))
+					require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(obj), obj))
+					got, gotFound, err := unstructured.NestedInt64(obj.Object, "spec", "minAvailable")
+					require.NoError(t, err)
+					require.Equal(t, found, gotFound)
+					require.Equal(t, minimum, got, "unrelated updates must not mutate the legacy minimum")
+					obj.SetFinalizers(nil)
+					require.NoError(t, cl.Update(ctx, obj), "finalizer removal must not require repairing a legacy minimum")
+					candidate := obj.DeepCopy()
+					require.NoError(t, unstructured.SetNestedField(candidate.Object, int64(-2), "spec", "minAvailable"))
+					require.True(t, apierrors.IsInvalid(cl.Update(ctx, candidate)))
+					if found && tc.kind == "PodClique" {
+						candidate := obj.DeepCopy()
+						unstructured.RemoveNestedField(candidate.Object, "spec", "minAvailable")
+						require.True(t, apierrors.IsInvalid(cl.Update(ctx, candidate)), "repair must establish a positive minimum")
+					}
+
+					require.NoError(t, unstructured.SetNestedField(obj.Object, int64(2), "spec", "minAvailable"))
+					require.NoError(t, cl.Update(ctx, obj), "legacy minima must be explicitly repairable")
+					require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(obj), obj))
+					for _, patch := range []string{
+						`{"spec":{"minAvailable":1}}`, `{"spec":{"minAvailable":0}}`, `{"spec":{"minAvailable":null}}`,
+					} {
+						require.True(t, apierrors.IsInvalid(cl.Patch(ctx, obj.DeepCopy(),
+							client.RawPatch(types.MergePatchType, []byte(patch)))))
+					}
+					obj.SetFinalizers(nil)
+					require.NoError(t, cl.Update(ctx, obj))
+					require.NoError(t, cl.Delete(ctx, obj))
+					require.True(t, apierrors.IsNotFound(cl.Get(ctx, client.ObjectKeyFromObject(obj), obj)))
+				})
 			}
 		})
 	}

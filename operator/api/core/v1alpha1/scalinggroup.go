@@ -19,6 +19,8 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:object:root=true
+// +kubebuilder:validation:XValidation:rule="has(self.spec.minAvailable) ? self.spec.minAvailable > 0 || (oldSelf.hasValue() && has(oldSelf.value().spec.minAvailable) && self.spec.minAvailable == oldSelf.value().spec.minAvailable) : oldSelf.hasValue() && !has(oldSelf.value().spec.minAvailable)",message="spec.minAvailable must be set to a positive value",fieldPath=".spec.minAvailable",optionalOldSelf=true
+// +kubebuilder:validation:XValidation:rule="!oldSelf.hasValue() || !has(oldSelf.value().spec.minAvailable) || oldSelf.value().spec.minAvailable <= 0 || (has(self.spec.minAvailable) && self.spec.minAvailable == oldSelf.value().spec.minAvailable)",message="spec.minAvailable is immutable once positive",fieldPath=".spec.minAvailable",optionalOldSelf=true
 // +kubebuilder:subresource:status
 // +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.selector
 // +kubebuilder:resource:shortName={pcsg}
@@ -68,7 +70,8 @@ type PodCliqueScalingGroupSpec struct {
 	// MinAvailable specifies the minimum number of ready replicas required for a PodCliqueScalingGroup to be considered operational.
 	// A PodCliqueScalingGroup replica is considered "ready" when its associated PodCliques have sufficient ready or starting pods.
 	// If MinAvailable is breached, it will be used to signal that the PodCliqueScalingGroup is no longer operating with the desired availability.
-	// MinAvailable cannot be greater than Replicas. If ScaleConfig is defined then its MinAvailable should not be less than ScaleConfig.MinReplicas.
+	// MinAvailable must be positive and cannot exceed positive Replicas; zero Replicas denotes hibernation.
+	// A positive MinAvailable is immutable. Legacy non-positive values may be explicitly repaired.
 	//
 	// It serves two main purposes:
 	// 1. Gang Scheduling: MinAvailable defines the minimum number of replicas that are guaranteed to be gang scheduled.
