@@ -27,6 +27,8 @@ import (
 	kaitopologyv1alpha1 "github.com/kai-scheduler/KAI-scheduler/pkg/apis/kai/v1alpha1"
 	kaischedulingv2alpha2 "github.com/kai-scheduler/KAI-scheduler/pkg/apis/scheduling/v2alpha2"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -56,6 +58,8 @@ var schemeBuilder = runtime.SchemeBuilder{
 	groveschedulerv1alpha1.AddToScheme,
 	kaischedulingv2alpha2.AddToScheme,
 	kaitopologyv1alpha1.AddToScheme,
+	schedulingv1beta1.AddToScheme,
+	schedulingv1alpha3.AddToScheme,
 }
 
 // newScheme creates a runtime.Scheme with all e2e types registered.
