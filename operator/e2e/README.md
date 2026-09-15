@@ -93,6 +93,12 @@ used. `Test_ZR12` deletes membership while the idle scale target survives, then
 explicitly deletes that target. Membership reconstruction must preserve the live
 zero; target recreation must initialize from the template without a deadlock.
 
+`Test_ZR13` models two `/scale` writers using an explicit `resourceVersion`.
+After one writer changes the target, the stale writer must receive a Conflict
+without undoing the accepted active or idle intent. Both kinds retain their target
+UID across Grove restarts, and a refetched write must subsequently converge to
+the new replica count with Ready Pods.
+
 Automatic recovery retains the PodClique and PodCliqueScalingGroup scale objects.
 PCS annotations record each replica's recovery epoch and phase; replacement Pods
 carry that epoch, so a controller restart or late old-epoch Pod creation cannot
@@ -109,7 +115,7 @@ this recovery guarantee; a new logical component is initialized from its templat
 
 ### KEDA Integration
 
-`Test_KEDA_ActiveFloorAndHibernation` is opt-in. Install KEDA with its CRDs,
+The `Test_KEDA_*` tests are opt-in. Install KEDA with its CRDs,
 operator, admission webhook, and external metrics API in the same dedicated
 real-worker cluster described above. The test expects a single KEDA operator
 Pod with `app.kubernetes.io/name=keda-operator`. It restarts both Grove and KEDA;
@@ -137,18 +143,30 @@ GROVE_E2E_WORKLOAD_IMAGE=registry:5001/busybox:latest \
 go test -tags=e2e ./e2e/tests -run '^Test_KEDA_' -count=2 -v -timeout=45m
 ```
 
-The test creates an ephemeral unauthenticated Redis queue and a ScaledObject for
+Each test creates an ephemeral unauthenticated Redis queue and a ScaledObject for
 each target kind, standalone PodClique and PodCliqueScalingGroup. Override
 `GROVE_E2E_REDIS_IMAGE` when workers use a local registry. No KEDA Go module
-dependency is added to the operator, and ordinary E2E runs skip this test.
+dependency is added to the operator, and ordinary E2E runs skip these tests.
 
-Each target completes two demand cycles through `0 -> 2 -> 4 -> 2 -> 0`, using
+In `Test_KEDA_ActiveFloorAndHibernation`, each target completes two demand cycles
+through `0 -> 2 -> 4 -> 2 -> 0`, using
 `minReplicaCount: 2`, `idleReplicaCount: 0`, and `maxReplicaCount: 4`.
 Assertions inspect the real `/scale` target, Ready workload Pods, stable target
 UIDs, and an unaffected always-active component. Idle targets must remain zero
 after Grove and KEDA restarts. A deliberately incompatible active floor of one
 must surface `KEDAScaleTargetActivationFailed` without changing the target;
 restoring two must reactivate it.
+
+Additional failure cases exercise both target kinds:
+
+| Test | Fault | Required Result |
+| --- | --- | --- |
+| `Test_KEDA_ActiveDownscaleRejected` | Active target at two; change KEDA's active floor to one with nonzero demand. | A direct below-quorum `/scale` probe must return `Invalid` with a `spec` cause. HPA reports `AbleToScale=False/FailedUpdateScale` and at least two `FailedRescale` occurrences. Replicas remain two, Pods retain their UIDs and placement, and correcting the floor permits scale-out and hibernation. |
+| `Test_KEDA_MetricFailureRecovery` | Temporarily deny Redis `LLEN`, first at four replicas and then at zero. | KEDA reports `Ready=False/TriggerError`; active HPA reports `ScalingActive=False/FailedGetExternalMetric`. Replicas and Pod identities remain unchanged for 20 seconds after failure is observed. Restoring read permission permits real scaling to two Ready replicas. |
+
+The metric-failure case preserves the Redis queue and uses no fallback policy.
+It exercises a scaler read error without changing the ScaledObject or Redis
+connectivity, not Redis data loss or an external metrics API outage.
 
 This is Redis-triggered activation and HPA integration, not coverage of every
 KEDA scaler, fallback policy, authentication mode, or rolling-update workflow.
@@ -164,7 +182,7 @@ The membership state-machine fuzzer runs without a cluster. From `operator`:
 ```bash
 go test ./internal/controller/podcliqueset/components/podgangmap \
   -run '^$' -fuzz '^FuzzHibernationMembership$' -fuzztime=3m -parallel=2
-go test -tags=e2e ./e2e/grove/workload ./e2e/k8s/pods -count=10
+go test -tags=e2e ./e2e/grove/workload ./e2e/k8s ./e2e/k8s/pods -count=10
 ```
 
 Randomized sequences cover two independent scaling groups and a standalone
@@ -172,7 +190,12 @@ clique: idle/wake/scale transitions, complete and unique membership, stable
 anchors, monotonic epochs when an empty ScaleOut slot is reused, input
 immutability, observation-order independence, and steady-state idempotence.
 Helper unit tests ensure asynchronous waits do not mistake stale HPA
-configuration or an old/terminating controller Pod for successful convergence.
+configuration, unrelated conditions, or an old/terminating controller Pod for
+successful convergence. Invalid negative queue lengths are rejected before any
+Redis command runs. Warning-event helpers filter by namespace, target UID, type,
+and reason, and count aggregated occurrences without double-counting the legacy
+and series counters. Unit tests cover those filters, empty results, missing
+target UIDs, and API read failures.
 
 ### Running in CI/CD
 

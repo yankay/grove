@@ -24,12 +24,15 @@ import (
 	"time"
 
 	"github.com/ai-dynamo/grove/operator/e2e/k8s/k8sclient"
+
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,6 +51,43 @@ func (wm *WorkloadManager) WaitForKEDAHPA(ctx context.Context, scaled *unstructu
 		return metav1.IsControlledBy(hpa, scaled) && hpa.Spec.MinReplicas != nil &&
 			*hpa.Spec.MinReplicas == floor && hpa.Spec.ScaleTargetRef.APIVersion == "grove.io/v1alpha1" &&
 			hpa.Spec.ScaleTargetRef.Kind == kind && hpa.Spec.ScaleTargetRef.Name == target, nil
+	})
+}
+
+// WaitForKEDACondition observes the scaler's own failure or recovery signal.
+func (wm *WorkloadManager) WaitForKEDACondition(ctx context.Context, scaled *unstructured.Unstructured, conditionType string, status metav1.ConditionStatus, reason string, timeout, interval time.Duration) error {
+	return wait.PollUntilContextTimeout(ctx, interval, timeout, true, func(ctx context.Context) (bool, error) {
+		current := scaled.DeepCopy()
+		if err := wm.cl.Get(ctx, client.ObjectKeyFromObject(scaled), current); err != nil {
+			return false, err
+		}
+		var observed struct {
+			Status struct {
+				Conditions []metav1.Condition `json:"conditions"`
+			} `json:"status"`
+		}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(current.Object, &observed); err != nil {
+			return false, err
+		}
+		condition := meta.FindStatusCondition(observed.Status.Conditions, conditionType)
+		return current.GetUID() == scaled.GetUID() && condition != nil &&
+			condition.Status == status && condition.Reason == reason, nil
+	})
+}
+
+// WaitForHPACondition checks both the condition category and its reason.
+func (wm *WorkloadManager) WaitForHPACondition(ctx context.Context, key client.ObjectKey, conditionType autoscalingv2.HorizontalPodAutoscalerConditionType, status corev1.ConditionStatus, reason string, timeout, interval time.Duration) error {
+	return wait.PollUntilContextTimeout(ctx, interval, timeout, true, func(ctx context.Context) (bool, error) {
+		hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+		if err := wm.cl.Get(ctx, key, hpa); err != nil {
+			return false, err
+		}
+		for _, condition := range hpa.Status.Conditions {
+			if condition.Type == conditionType && condition.Status == status && condition.Reason == reason {
+				return true, nil
+			}
+		}
+		return false, nil
 	})
 }
 
@@ -104,6 +144,9 @@ func KEDARedisResources(namespace, name, image string) (*corev1.Pod, *corev1.Ser
 // SetKEDAQueueLength atomically replaces demand so KEDA cannot observe an
 // unintended zero between separate DEL and LPUSH commands.
 func SetKEDAQueueLength(ctx context.Context, cl *k8sclient.Client, namespace, pod, queue string, count int) error {
+	if count < 0 {
+		return fmt.Errorf("queue length must be nonnegative: %d", count)
+	}
 	ctx, cancel := context.WithTimeout(ctx, queueCommandTimeout)
 	defer cancel()
 	script := `redis.call('DEL', KEYS[1]); for i=1,tonumber(ARGV[1]) do redis.call('LPUSH', KEYS[1], 'work') end; return redis.call('LLEN', KEYS[1])`
@@ -113,6 +156,26 @@ func SetKEDAQueueLength(ctx context.Context, cl *k8sclient.Client, namespace, po
 	}
 	if strings.TrimSpace(output) != strconv.Itoa(count) {
 		return fmt.Errorf("queue length: got %q, want %d", output, count)
+	}
+	return nil
+}
+
+// SetKEDAQueueReadable injects a scaler read failure without changing queue data,
+// connections, readiness probes, or ScaledObject configuration.
+func SetKEDAQueueReadable(ctx context.Context, cl *k8sclient.Client, namespace, pod string, readable bool) error {
+	ctx, cancel := context.WithTimeout(ctx, queueCommandTimeout)
+	defer cancel()
+	permission := "-llen"
+	if readable {
+		permission = "+llen"
+	}
+	output, err := cl.Exec(ctx, namespace, pod, "redis",
+		[]string{"redis-cli", "--raw", "ACL", "SETUSER", "default", permission})
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(output) != "OK" {
+		return fmt.Errorf("queue read permission: got %q, want OK", output)
 	}
 	return nil
 }
