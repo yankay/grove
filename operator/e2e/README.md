@@ -99,7 +99,24 @@ without undoing the accepted active or idle intent. Both kinds retain their targ
 UID across Grove restarts, and a refetched write must subsequently converge to
 the new replica count with Ready Pods.
 
-Automatic recovery retains the PodClique and PodCliqueScalingGroup scale objects.
+`Test_ZR14_MemberScalingLifecycle` exercises non-zero PCSG member scaling under
+both RollingRecreate and OnDelete: `3 -> 4 -> 3`, restart with a retained target
+at four, and group idle/wake. It checks Ready Pods, member/group identity,
+undisturbed siblings, and complete native subgroup policies. Group hibernation
+deletes its members; the test distinguishes a newly template-initialized member
+on wake from recovery of a retained scale object. This is workload lifecycle
+coverage, not inference engine-world resize validation.
+PodGang member accounting follows each existing member's replica target rather
+than its template, so scale-out Pods remain referenced and scale-in does not wait
+for obsolete template-sized membership. Templates remain the fallback until a
+member object exists.
+
+### Experimental Recovery Scope
+
+The prototype's PCS-replica-wide automatic recovery retains the PodClique and
+PodCliqueScalingGroup scale objects. General replica recovery policy is deferred
+from GREP-0677 as of revision `3bee0ccd`; this prototype behavior is not a
+normative requirement of that GREP.
 PCS annotations record each replica's recovery epoch and phase; replacement Pods
 carry that epoch, so a controller restart or late old-epoch Pod creation cannot
 reset replica intent. Old Pods must drain before recreation, and recovery remains
@@ -112,6 +129,25 @@ Replacement Pods resolve startup dependencies from current gang membership rathe
 than retained dependencies on components that have since gone idle.
 Explicitly deleting a scale object or scaling in a top-level PCS replica is outside
 this recovery guarantee; a new logical component is initialized from its template.
+PCSG-local gang termination is also outside the retained-object guarantee: when
+the group can still satisfy its minimum, its controller deletes the failed
+replica's member PodCliques and recreates them from the template. This existing
+path can reset an independently scaled member. The prototype does not establish
+a universal replica-preservation policy for every recovery path.
+
+### Direct-Object Admission
+
+New PodCliques default an omitted `minAvailable` to `max(1, replicas)` without
+changing explicit zero replicas. PCSGs retain their existing minimum default of
+one. Explicit non-positive minima are rejected on create; positive minima cannot
+be changed or removed on update, including while idle.
+
+Legacy missing or non-positive minima are not silently changed on unrelated
+updates. They may be explicitly repaired to a valid positive value, after which
+that value is immutable. Existing positive below-quorum targets can still update
+unrelated fields without changing replicas or their minimum. Admission tests use
+the production webhook and Kubernetes API server; CRD upgrade tests also cover
+legacy updates, repairs, and finalizer removal.
 
 ### KEDA Integration
 

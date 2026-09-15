@@ -332,6 +332,11 @@ func buildPCLQInfosAndTopoConstraintsForPCSGReplica(ss *syncState, pcsReplicaInd
 			minAvailable: *pclqTemplateSpec.Spec.MinAvailable,
 			isStandalone: false,
 		}
+		// PCSG members can scale independently. Templates initialize missing members,
+		// but must not truncate live membership or keep a scaled-in gang waiting.
+		if pclq, ok := ss.existingPCLQByName[pclqFQN]; ok {
+			pi.replicas = pclq.Spec.Replicas
+		}
 		pi.topologyConstraint = createTopologyPackConstraint(ss, types.NamespacedName{Namespace: ss.pcs.Namespace, Name: pclqFQN}, pclqTemplateSpec.TopologyConstraint)
 		pclqs = append(pclqs, pi)
 		pclqFQNs = append(pclqFQNs, pclqFQN)
