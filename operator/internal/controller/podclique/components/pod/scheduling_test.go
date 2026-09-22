@@ -21,9 +21,11 @@ import (
 	"testing"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
+	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler"
+	"github.com/ai-dynamo/grove/operator/internal/scheduler/lpx"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 
 	"github.com/go-logr/logr"
@@ -231,6 +233,35 @@ func TestSchedulingGateBackendFailure(t *testing.T) {
 			assert.True(t, hasPodGangSchedulingGate(got))
 		})
 	}
+}
+
+func TestSchedulingGateLPXFallbackHandoff(t *testing.T) {
+	gangName := podGangNameForEpoch(testAnchor0Epoch)
+	pod := gatedPod("pod-a", gangName)
+	gang := testutils.NewPodGangBuilder(gangName, testNamespace).
+		WithLabels(map[string]string{apicommon.LabelEpoch: testAnchor0Epoch}).
+		WithLastScheduled().WithPodGroupPods(testCliqueName, pod.Name).Build()
+	ss := gateRemovalSnapshot([]*corev1.Pod{pod}, twoEpochPGM())
+	cl := testutils.NewTestClientBuilder().WithObjects(pod, gang, ss.pclq).Build()
+	secondary := &testutils.FakePodGangResourceBackend{
+		Backend: testutils.NewFakeSchedulerBackend("native"),
+	}
+	backend := lpx.New(cl, configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameLPX}, secondary)
+	r := _resource{client: cl, schedRegistry: &testutils.FakeSchedulerRegistry{
+		Backends: map[string]scheduler.Backend{"lpx": backend}, DefaultBackend: "lpx",
+	}}
+	_, err := r.checkAndRemovePodSchedulingGates(t.Context(), logr.Discard(), ss)
+	require.NoError(t, err)
+	got := &corev1.Pod{}
+	require.NoError(t, cl.Get(t.Context(), client.ObjectKeyFromObject(pod), got))
+	require.True(t, hasPodGangSchedulingGate(got), "pending fallback policy must retain the gate")
+
+	secondary.Synced = true
+	ss.existingPCLQPods = []*corev1.Pod{got}
+	_, err = r.checkAndRemovePodSchedulingGates(t.Context(), logr.Discard(), ss)
+	require.NoError(t, err)
+	require.NoError(t, cl.Get(t.Context(), client.ObjectKeyFromObject(pod), got))
+	require.False(t, hasPodGangSchedulingGate(got), "synced fallback policy releases the gate")
 }
 
 func minimumSchedulingFixture() (*syncSnapshot, *grovecorev1alpha1.PodCliqueScalingGroup, []*grovecorev1alpha1.PodClique, []*corev1.Pod) {

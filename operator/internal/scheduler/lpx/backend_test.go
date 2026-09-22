@@ -22,6 +22,7 @@ import (
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
+	"github.com/ai-dynamo/grove/operator/internal/scheduler"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler/kai"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 	schedulertest "github.com/ai-dynamo/grove/operator/test/utils/scheduler"
@@ -31,6 +32,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -99,6 +101,10 @@ func TestBackendSyncPodGangLPXOnly(t *testing.T) {
 	backend := New(cl, configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameLPX}, kaiBackend)
 	require.NoError(t, backend.Init(cl))
 
+	native := backend.(scheduler.PodGangResourceBackend)
+	synced, err := native.IsPodGangSynced(t.Context(), podGang)
+	require.NoError(t, err)
+	assert.True(t, synced, "LPX-only gangs need no fallback policy")
 	require.NoError(t, backend.SyncPodGang(t.Context(), podGang))
 
 	storedPodGang := &groveschedulerv1alpha1.PodGang{}
@@ -119,6 +125,7 @@ func TestBackendSyncPodGangMixedWorkload(t *testing.T) {
 		Build()
 
 	podGang := testutils.NewPodGangBuilder("mixed-workload-0", pcs.Namespace).
+		WithManaged(true).
 		WithPodGroups([]groveschedulerv1alpha1.PodGroup{
 			{Name: lpxPodClique.Name, MinReplicas: 1},
 			{Name: kaiPodClique.Name, MinReplicas: 1},
@@ -136,7 +143,16 @@ func TestBackendSyncPodGangMixedWorkload(t *testing.T) {
 	backend := New(cl, configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameLPX}, kaiBackend)
 	require.NoError(t, backend.Init(cl))
 
+	native := backend.(scheduler.PodGangResourceBackend)
+	assert.IsType(t, &kaischedulingv2alpha2.PodGroup{}, native.PodGangResource())
+	synced, err := native.IsPodGangSynced(t.Context(), podGang)
+	require.NoError(t, err)
+	assert.False(t, synced, "missing fallback policy must block handoff")
 	require.NoError(t, backend.SyncPodGang(t.Context(), podGang))
+	require.NoError(t, cl.Get(t.Context(), client.ObjectKeyFromObject(podGang), podGang))
+	synced, err = native.IsPodGangSynced(t.Context(), podGang)
+	require.NoError(t, err)
+	assert.True(t, synced, "handoff must compare only the non-LPX membership")
 
 	kaiPodGroup := &kaischedulingv2alpha2.PodGroup{}
 	require.NoError(t, cl.Get(t.Context(), client.ObjectKeyFromObject(podGang), kaiPodGroup))
@@ -149,6 +165,58 @@ func TestBackendSyncPodGangMixedWorkload(t *testing.T) {
 	require.NoError(t, cl.Get(t.Context(), client.ObjectKeyFromObject(podGang), storedPodGang))
 	require.Len(t, storedPodGang.Spec.PodGroups, 2)
 	assert.Equal(t, "true", storedPodGang.Annotations["kai.scheduler/skip-podgrouper"])
+
+	podGang.Spec.PodGroups[1].MinReplicas = 2
+	synced, err = native.IsPodGangSynced(t.Context(), podGang)
+	require.NoError(t, err)
+	assert.False(t, synced, "stale subgroup minima must block handoff")
+	require.NoError(t, backend.SyncPodGang(t.Context(), podGang))
+	synced, err = native.IsPodGangSynced(t.Context(), podGang)
+	require.NoError(t, err)
+	assert.True(t, synced)
+	require.NoError(t, cl.Get(t.Context(), client.ObjectKeyFromObject(podGang), kaiPodGroup))
+	assert.Equal(t, int32(2), *kaiPodGroup.Spec.MinMember)
+	require.Len(t, kaiPodGroup.Spec.SubGroups, 1)
+	assert.Equal(t, ptr.To(int32(2)), kaiPodGroup.Spec.SubGroups[0].MinMember)
+
+	groups := podGang.Spec.PodGroups
+	podGang.Spec.PodGroups = groups[:1]
+	require.NoError(t, backend.SyncPodGang(t.Context(), podGang))
+	require.True(t, apierrors.IsNotFound(cl.Get(t.Context(), client.ObjectKeyFromObject(podGang), kaiPodGroup)))
+	synced, err = native.IsPodGangSynced(t.Context(), podGang)
+	require.NoError(t, err)
+	assert.True(t, synced, "drained fallback members must not hold LPX pods")
+	podGang.Spec.PodGroups = groups
+	synced, err = native.IsPodGangSynced(t.Context(), podGang)
+	require.NoError(t, err)
+	assert.False(t, synced, "returning fallback members need a new native policy")
+	require.NoError(t, backend.SyncPodGang(t.Context(), podGang))
+	synced, err = native.IsPodGangSynced(t.Context(), podGang)
+	require.NoError(t, err)
+	assert.True(t, synced)
+	require.NoError(t, cl.Get(t.Context(), client.ObjectKeyFromObject(podGang), kaiPodGroup))
+
+	require.NoError(t, cl.Delete(t.Context(), kaiPodGroup))
+	synced, err = native.IsPodGangSynced(t.Context(), podGang)
+	require.NoError(t, err)
+	assert.False(t, synced, "deleted fallback policy must block handoff")
+
+	require.NoError(t, cl.Delete(t.Context(), kaiPodClique))
+	synced, err = native.IsPodGangSynced(t.Context(), podGang)
+	assert.False(t, synced)
+	assert.True(t, apierrors.IsNotFound(err), "missing membership must not be acknowledged")
+
+	synced, err = native.IsPodGangSynced(t.Context(), nil)
+	require.Error(t, err)
+	assert.False(t, synced)
+}
+
+func TestBackendWithoutNativeResources(t *testing.T) {
+	for _, secondary := range []scheduler.Backend{nil, testutils.NewFakeSchedulerBackend("default-scheduler")} {
+		backend := New(nil, configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameLPX}, secondary)
+		_, hasNativeResources := backend.(scheduler.PodGangResourceBackend)
+		assert.False(t, hasNativeResources, "do not register a native watch without a managed resource")
+	}
 }
 
 func TestBackendValidatePodCliqueSet(t *testing.T) {

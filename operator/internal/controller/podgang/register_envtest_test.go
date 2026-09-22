@@ -24,6 +24,7 @@ import (
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler/kai"
+	"github.com/ai-dynamo/grove/operator/internal/scheduler/lpx"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler/volcano"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 	schedulertest "github.com/ai-dynamo/grove/operator/test/utils/scheduler"
@@ -69,6 +70,9 @@ func TestNativePodGroupWatchRepair(t *testing.T) {
 		string(configv1alpha1.SchedulerNameKai):     kai.New(mgr.GetClient(), scheme, nil, configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai}),
 		string(configv1alpha1.SchedulerNameVolcano): volcano.New(mgr.GetClient(), scheme, nil, configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameVolcano}),
 	}}
+	registry.Backends[string(configv1alpha1.SchedulerNameLPX)] = lpx.New(mgr.GetClient(),
+		configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameLPX},
+		registry.Get(string(configv1alpha1.SchedulerNameKai)))
 	r := NewReconciler(mgr, configv1alpha1.PodGangControllerConfiguration{ConcurrentSyncs: ptr.To(2)}, registry)
 	require.NoError(t, r.RegisterWithManager(mgr))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -92,7 +96,10 @@ func TestNativePodGroupWatchRepair(t *testing.T) {
 		WithReplicas(1).WithPodCliqueParameters("worker", 1, nil).Build()
 	pcs.Labels = map[string]string{"kai.scheduler/queue": "team"}
 	require.NoError(t, cl.Create(ctx, pcs))
-	for _, name := range []configv1alpha1.SchedulerName{configv1alpha1.SchedulerNameKai, configv1alpha1.SchedulerNameVolcano} {
+	pclq := testutils.NewPodCliqueBuilder(pcs.Name, pcs.UID, "worker", pcs.Namespace, 0).WithReplicas(2).Build()
+	pclq.Name = "worker"
+	require.NoError(t, cl.Create(ctx, pclq))
+	for _, name := range []configv1alpha1.SchedulerName{configv1alpha1.SchedulerNameKai, configv1alpha1.SchedulerNameVolcano, configv1alpha1.SchedulerNameLPX} {
 		t.Run(string(name), func(t *testing.T) {
 			gang := testutils.NewPodGangBuilder("watch-"+string(name), pcs.Namespace).
 				WithManaged(true).WithSchedulerName(string(name)).WithPodGroup("worker", 2).Build()
