@@ -18,11 +18,12 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
-	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 
 	"github.com/go-logr/logr"
@@ -45,6 +46,7 @@ func TestScaleOutEpochRecreatesSurvivingMembers(t *testing.T) {
 			ctx := context.Background()
 			pcs := testutils.NewPodCliqueSetBuilder("pcs", "default", "pcs-uid").
 				WithReplicas(1).WithPodCliqueSetGenerationHash(ptr.To("generation")).
+				WithTerminationDelay(time.Minute).
 				WithScalingGroupConfig("group", []string{"worker"}, 2, 2).
 				WithCliqueStartupType(ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder)).Build()
 			pcs.Spec.UpdateStrategy = &grovecorev1alpha1.PodCliqueSetUpdateStrategy{Type: strategy}

@@ -1127,14 +1127,6 @@ func TestMutateUpdateInProgressCondition(t *testing.T) {
 	}
 }
 
-// healthyPCSGReplica returns a complete PCSG replica entry (one non-terminating, non-breached
-// PCLQ). The tests using this set Spec.CliqueNames to a single name so the replica counts as
-// complete; computeNotInBreachReplicas only counts a replica as not-in-breach when all expected
-// PodCliques exist and none has MinAvailableBreached=True.
-func healthyPCSGReplica() []grovecorev1alpha1.PodClique {
-	return []grovecorev1alpha1.PodClique{{}}
-}
-
 // breachedPCSGReplica returns a complete PCSG replica entry with one breached PCLQ.
 func breachedPCSGReplica() []grovecorev1alpha1.PodClique {
 	return []grovecorev1alpha1.PodClique{{
@@ -1145,13 +1137,6 @@ func breachedPCSGReplica() []grovecorev1alpha1.PodClique {
 			}},
 		},
 	}}
-}
-
-// incompletePCSGReplica returns a replica entry that is missing PodCliques relative to
-// Spec.CliqueNames (an empty PCLQ list). It has no breached PCLQ but must NOT be counted as
-// not-in-breach, because a partially-created replica is not a valid healthy replica.
-func incompletePCSGReplica() []grovecorev1alpha1.PodClique {
-	return []grovecorev1alpha1.PodClique{}
 }
 
 // Test helpers

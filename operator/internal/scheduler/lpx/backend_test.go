@@ -93,7 +93,7 @@ func TestBackendSyncPodGangLPXOnly(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, groveschedulerv1alpha1.AddToScheme(scheme))
 
-	cl := testutils.NewTestClientBuilder().WithScheme(scheme).WithObjects(pcs, lpxPodClique, podGang).Build()
+	cl := testutils.NewTestClientBuilder().WithScheme(scheme).WithObjects(schedulertest.NewKAIPodGroupCRD(), pcs, lpxPodClique, podGang).Build()
 
 	kaiBackend := kai.New(cl, scheme, nil, configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
 	backend := New(cl, configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameLPX}, kaiBackend)
@@ -130,7 +130,7 @@ func TestBackendSyncPodGangMixedWorkload(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, groveschedulerv1alpha1.AddToScheme(scheme))
 
-	cl := testutils.NewTestClientBuilder().WithScheme(scheme).WithObjects(pcs, lpxPodClique, kaiPodClique, podGang).Build()
+	cl := testutils.NewTestClientBuilder().WithScheme(scheme).WithObjects(schedulertest.NewKAIPodGroupCRD(), pcs, lpxPodClique, kaiPodClique, podGang).Build()
 
 	kaiBackend := kai.New(cl, scheme, nil, configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
 	backend := New(cl, configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameLPX}, kaiBackend)

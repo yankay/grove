@@ -2016,7 +2016,7 @@ func TestScalingGroupMemberReplicaValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			oldPCS := createTestPodCliqueSet("inference")
 			oldPCS.Spec.Template.Cliques[0].Spec.Replicas = 0
-			oldPCS.Spec.Template.Cliques = append(oldPCS.Spec.Template.Cliques, createDummyPodCliqueTemplate("worker"))
+			oldPCS.Spec.Template.Cliques = append(oldPCS.Spec.Template.Cliques, createPodCliqueTemplate("worker"))
 			oldPCS.Spec.Template.PodCliqueScalingGroupConfigs = []grovecorev1alpha1.PodCliqueScalingGroupConfig{{
 				Name:         "workers",
 				CliqueNames:  []string{"worker"},

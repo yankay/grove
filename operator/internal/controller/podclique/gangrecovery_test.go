@@ -18,8 +18,9 @@ import (
 	"context"
 	"testing"
 
-	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	"github.com/ai-dynamo/grove/operator/internal/controller/podclique/expectations"
 	"github.com/ai-dynamo/grove/operator/internal/expect"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 
 	"github.com/go-logr/logr"
@@ -57,7 +58,7 @@ func TestGangRecoveryDrainsOldPodsAcrossRestart(t *testing.T) {
 			return []string{string(owner.UID)}
 		}).Build()
 	r := &Reconciler{client: cl, expectationsStore: expect.NewExpectationsStore()}
-	require.NoError(t, r.expectationsStore.AddIndexers(componentutils.PodCliqueExpectationsIndexers()))
+	require.NoError(t, r.expectationsStore.AddIndexers(expectations.PodCliqueExpectationsIndexers()))
 	result := r.reconcileGangRecovery(ctx, logr.Discard(), pcs, pclq)
 	require.False(t, result.HasErrors())
 	requeue, err := result.Result()
@@ -71,7 +72,7 @@ func TestGangRecoveryDrainsOldPodsAcrossRestart(t *testing.T) {
 	assert.True(t, foreign.DeletionTimestamp.IsZero())
 
 	restarted := &Reconciler{client: cl, expectationsStore: expect.NewExpectationsStore()}
-	require.NoError(t, restarted.expectationsStore.AddIndexers(componentutils.PodCliqueExpectationsIndexers()))
+	require.NoError(t, restarted.expectationsStore.AddIndexers(expectations.PodCliqueExpectationsIndexers()))
 	result = restarted.reconcileGangRecovery(ctx, logr.Discard(), pcs, pclq)
 	require.False(t, result.HasErrors())
 	requeue, err = result.Result()

@@ -24,6 +24,7 @@ import (
 
 	"github.com/samber/lo"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -139,7 +140,7 @@ func PodGangNameForStandalonePCLQ(pgm *grovecorev1alpha1.PodGangMap, rnr apicomm
 }
 
 // ActivePodCliqueNamesForPodGang returns the PodClique FQNs materialized in podGangName.
-func ActivePodCliqueNamesForPodGang(pcs *grovecorev1alpha1.PodCliqueSet, pgm *grovecorev1alpha1.PodGangMap, rnr apicommon.ResourceNameReplica, podGangName string) (Set[string], error) {
+func ActivePodCliqueNamesForPodGang(pcs *grovecorev1alpha1.PodCliqueSet, pgm *grovecorev1alpha1.PodGangMap, rnr apicommon.ResourceNameReplica, podGangName string) (sets.Set[string], error) {
 	for i := range pgm.Spec.Entries {
 		entry := &pgm.Spec.Entries[i]
 		if entry.Role == grovecorev1alpha1.PodGangEntryRoleAnchor {
@@ -167,10 +168,9 @@ func ActivePodCliqueNamesForPodGang(pcs *grovecorev1alpha1.PodCliqueSet, pgm *gr
 }
 
 // ActivePodCliqueNamesForEntry resolves and validates every active member in an entry.
-func ActivePodCliqueNamesForEntry(pcs *grovecorev1alpha1.PodCliqueSet, rnr apicommon.ResourceNameReplica, entry *grovecorev1alpha1.PodGangEntry) (Set[string], error) {
-	names := make(Set[string])
-	standaloneNames, _ := GetExpectedPCLQNamesGroupByOwner(pcs)
-	standaloneSet := NewSet(standaloneNames)
+func ActivePodCliqueNamesForEntry(pcs *grovecorev1alpha1.PodCliqueSet, rnr apicommon.ResourceNameReplica, entry *grovecorev1alpha1.PodGangEntry) (sets.Set[string], error) {
+	names := sets.New[string]()
+	standaloneSet, _ := GetExpectedPCLQNamesGroupByOwner(pcs)
 	for cliqueName, replicas := range entry.PodCliques {
 		if replicas <= 0 {
 			continue
@@ -196,9 +196,9 @@ func ActivePodCliqueNamesForEntry(pcs *grovecorev1alpha1.PodCliqueSet, rnr apico
 	return names, nil
 }
 
-func podCliqueNamesForPCSGReplica(rnr apicommon.ResourceNameReplica, config grovecorev1alpha1.PodCliqueScalingGroupConfig, index int32) Set[string] {
+func podCliqueNamesForPCSGReplica(rnr apicommon.ResourceNameReplica, config grovecorev1alpha1.PodCliqueScalingGroupConfig, index int32) sets.Set[string] {
 	pcsgName := apicommon.GeneratePodCliqueScalingGroupName(rnr, config.Name)
-	names := make(Set[string], len(config.CliqueNames))
+	names := make(sets.Set[string], len(config.CliqueNames))
 	for _, cliqueName := range config.CliqueNames {
 		names[apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{Name: pcsgName, Replica: int(index)}, cliqueName)] = struct{}{}
 	}

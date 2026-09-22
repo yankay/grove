@@ -26,7 +26,6 @@ import (
 	groveclientscheme "github.com/ai-dynamo/grove/operator/internal/client"
 	"github.com/ai-dynamo/grove/operator/internal/constants"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
-	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
 	podgangmapcomponent "github.com/ai-dynamo/grove/operator/internal/controller/podcliqueset/components/podgangmap"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/mnnvl"
@@ -39,6 +38,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/tools/record"
 	clocktesting "k8s.io/utils/clock/testing"
@@ -631,7 +631,7 @@ func TestIdentifyFullyQualifiedStartupDependencyNames(t *testing.T) {
 		WithPodCliqueParameters("worker", 1, nil).
 		Build()
 	pclq := &grovecorev1alpha1.PodClique{ObjectMeta: metav1.ObjectMeta{Name: "coyote-0-worker"}}
-	active := componentutils.NewSet([]string{"coyote-0-router", "coyote-0-worker"})
+	active := sets.New("coyote-0-router", "coyote-0-worker")
 
 	actual, err := identifyFullyQualifiedStartupDependencyNames(pcs, pclq, 0, 2, active)
 	require.NoError(t, err)

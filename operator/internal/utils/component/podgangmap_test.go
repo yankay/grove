@@ -27,6 +27,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -358,20 +359,20 @@ func TestActivePodCliqueNamesForPodGang(t *testing.T) {
 	t.Run("anchor includes positive standalone and colocated PCSG members", func(t *testing.T) {
 		actual, err := ActivePodCliqueNamesForPodGang(pcs, pgm, rnr, apicommon.GenerateAnchorPodGangName(rnr, "1000"))
 		require.NoError(t, err)
-		assert.Equal(t, NewSet([]string{
+		assert.Equal(t, sets.New(
 			"pcs-0-router",
 			"pcs-0-sg-0-prefill",
 			"pcs-0-sg-0-decode",
-		}), actual)
+		), actual)
 	})
 
 	t.Run("non-anchor includes only the materialized PCSG replica", func(t *testing.T) {
 		actual, err := ActivePodCliqueNamesForPodGang(pcs, pgm, rnr, apicommon.GenerateNonAnchorPodGangName(rnr, "1001", pcsgName, 1))
 		require.NoError(t, err)
-		assert.Equal(t, NewSet([]string{
+		assert.Equal(t, sets.New(
 			"pcs-0-sg-1-prefill",
 			"pcs-0-sg-1-decode",
-		}), actual)
+		), actual)
 	})
 
 	t.Run("unknown PodGang is an error", func(t *testing.T) {

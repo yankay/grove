@@ -22,7 +22,8 @@ import (
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/constants"
 	ctrlcommon "github.com/ai-dynamo/grove/operator/internal/controller/common"
-	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	"github.com/ai-dynamo/grove/operator/internal/controller/podclique/expectations"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -62,7 +63,7 @@ func (r *Reconciler) reconcileGangRecovery(ctx context.Context, logger logr.Logg
 		}
 	}
 	if pending || recovery.Phase == componentutils.GangRecoveryDraining {
-		if err := componentutils.ClearPodCliqueExpectations(logger, r.expectationsStore, pclq.ObjectMeta); err != nil {
+		if err := expectations.ClearPodCliqueExpectations(logger, r.expectationsStore, pclq.ObjectMeta); err != nil {
 			return ctrlcommon.ReconcileWithErrors("could not clear recovery expectations", err)
 		}
 		return ctrlcommon.ReconcileAfter(constants.ComponentSyncRetryInterval, "waiting for gang recovery drain")

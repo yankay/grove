@@ -341,7 +341,7 @@ func TestBackend_SyncPodGang_MissingClusterTopologyBindingFailsLoudly(t *testing
 		{Name: "worker", MinReplicas: 1},
 	}
 
-	cl := testutils.NewTestClientBuilder().WithObjects(pcs, podGang).Build()
+	cl := schedulertest.NewKAIClient(t, schedulertest.NewKAIPodGroupCRD(), pcs, podGang)
 	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
 	require.NoError(t, b.Init(cl))
 
@@ -382,7 +382,7 @@ func TestBackend_SyncPodGang_ResolvesExternallyManagedTopologyName(t *testing.T)
 		{Name: "worker", MinReplicas: 1},
 	}
 
-	cl := testutils.NewTestClientBuilder().WithObjects(pcs, ct, podGang).Build()
+	cl := schedulertest.NewKAIClient(t, schedulertest.NewKAIPodGroupCRD(), pcs, ct, podGang)
 	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
 	require.NoError(t, b.Init(cl))
 
@@ -706,7 +706,7 @@ func TestBackend_SyncPodGang_RemovesPodGroupOnEmptyInput(t *testing.T) {
 		{Name: "worker", MinReplicas: 1},
 	}
 
-	cl := testutils.NewTestClientBuilder().WithObjects(pcs, podGang).Build()
+	cl := schedulertest.NewKAIClient(t, schedulertest.NewKAIPodGroupCRD(), pcs, podGang)
 	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKai})
 	require.NoError(t, b.Init(cl))
 

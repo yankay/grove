@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 )
 
@@ -36,7 +37,7 @@ func TestStartupDependenciesPreservesOrderWithoutDuplicates(t *testing.T) {
 		"router":  {"pcs-0-router"},
 		"idle":    {"pcs-0-idle"},
 	}
-	active := NewSet([]string{"pcs-0-router", "pcs-0-sg-0-prefill"})
+	active := sets.New("pcs-0-router", "pcs-0-sg-0-prefill")
 	actual := StartupDependencies(pcs, 0, []string{"prefill", "router", "prefill", "idle"}, active, func(name string) []string {
 		return candidates[name]
 	})

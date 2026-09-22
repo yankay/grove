@@ -41,6 +41,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -734,7 +735,7 @@ func TestIdentifyFullyQualifiedStartupDependencyNames(t *testing.T) {
 				tc.pcsgReplica,
 				tc.pclq,
 				tc.foundAtIndex,
-				componentutils.NewSet(tc.active),
+				sets.New(tc.active...),
 			)
 
 			if tc.expectError {
@@ -762,21 +763,21 @@ func TestStartupDependenciesStayWithinMaterializedPodGang(t *testing.T) {
 	pclq := &grovecorev1alpha1.PodClique{}
 
 	t.Run("anchor skips idle predecessor and finds nearest active clique", func(t *testing.T) {
-		active := componentutils.NewSet([]string{
+		active := sets.New(
 			"test-pcs-0-router",
 			"test-pcs-0-sg-0-prefill",
 			"test-pcs-0-sg-0-decode",
-		})
+		)
 		actual, err := identifyFullyQualifiedStartupDependencyNames(pcs, 0, pcsg, 0, pclq, 2, active)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"test-pcs-0-router"}, actual)
 	})
 
 	t.Run("non-anchor depends only on its own active predecessor", func(t *testing.T) {
-		active := componentutils.NewSet([]string{
+		active := sets.New(
 			"test-pcs-0-sg-1-prefill",
 			"test-pcs-0-sg-1-decode",
-		})
+		)
 		actual, err := identifyFullyQualifiedStartupDependencyNames(pcs, 0, pcsg, 1, pclq, 3, active)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"test-pcs-0-sg-1-prefill"}, actual)
@@ -785,10 +786,10 @@ func TestStartupDependenciesStayWithinMaterializedPodGang(t *testing.T) {
 	t.Run("explicit drops dependencies outside the target PodGang", func(t *testing.T) {
 		startupType = grovecorev1alpha1.CliqueStartupTypeExplicit
 		pclq.Spec.StartsAfter = []string{"router", "prefill"}
-		active := componentutils.NewSet([]string{
+		active := sets.New(
 			"test-pcs-0-sg-1-prefill",
 			"test-pcs-0-sg-1-decode",
-		})
+		)
 		actual, err := identifyFullyQualifiedStartupDependencyNames(pcs, 0, pcsg, 1, pclq, 3, active)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"test-pcs-0-sg-1-prefill"}, actual)

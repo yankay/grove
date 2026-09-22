@@ -535,7 +535,7 @@ func (v *pcsValidator) validateRollingUpdateConfiguration(rollingUpdate *groveco
 	if rollingUpdate.MaxUnavailable != nil {
 		if *rollingUpdate.MaxUnavailable <= 0 {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("maxUnavailable"), *rollingUpdate.MaxUnavailable, "must be greater than 0"))
-		} else if *rollingUpdate.MaxUnavailable > replicas {
+		} else if replicas > 0 && *rollingUpdate.MaxUnavailable > replicas {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("maxUnavailable"), *rollingUpdate.MaxUnavailable, fmt.Sprintf("must not be greater than replicas (%d)", replicas)))
 		}
 	}
@@ -1033,7 +1033,7 @@ func (v *pcsValidator) validatePodCliqueUpdate(oldCliques []*grovecorev1alpha1.P
 		oldCliqueIndexMap[clique.Name] = lo.Tuple2[int, *grovecorev1alpha1.PodCliqueTemplateSpec]{A: i, B: clique}
 	})
 	orderIsEnforced := requiresOrderValidation(v.pcs.Spec.Template.StartupType)
-	scalingGroupCliqueNames := v.getScalingGroupCliqueNames()
+	_, scalingGroupCliqueNames := componentutils.GetExpectedPCLQNamesGroupByOwner(v.pcs)
 	// Validate each new clique against its corresponding old clique
 	for newCliqueIndex, newClique := range newCliques {
 		oldIndexCliqueTuple, exists := oldCliqueIndexMap[newClique.Name]

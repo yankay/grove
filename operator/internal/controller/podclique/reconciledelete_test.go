@@ -164,7 +164,7 @@ func TestDeletionWaitsForOwnedPodsAcrossRestart(t *testing.T) {
 	})
 	for range 2 {
 		r := &Reconciler{client: cached, apiReader: cl, expectationsStore: expect.NewExpectationsStore()}
-		require.NoError(t, r.expectationsStore.AddIndexers(componentutils.PodCliqueExpectationsIndexers()))
+		require.NoError(t, r.expectationsStore.AddIndexers(expectations.PodCliqueExpectationsIndexers()))
 		result := r.triggerDeletionFlow(ctx, logr.Discard(), pclq)
 		require.False(t, result.HasErrors())
 		require.True(t, result.NeedsRequeue())
@@ -178,7 +178,7 @@ func TestDeletionWaitsForOwnedPodsAcrossRestart(t *testing.T) {
 	owned.Finalizers = nil
 	require.NoError(t, cl.Update(ctx, owned))
 	r := &Reconciler{client: cl, apiReader: cl, expectationsStore: expect.NewExpectationsStore()}
-	require.NoError(t, r.expectationsStore.AddIndexers(componentutils.PodCliqueExpectationsIndexers()))
+	require.NoError(t, r.expectationsStore.AddIndexers(expectations.PodCliqueExpectationsIndexers()))
 	result := r.triggerDeletionFlow(ctx, logr.Discard(), pclq)
 	require.False(t, result.HasErrors())
 	require.False(t, result.NeedsRequeue())
@@ -215,7 +215,7 @@ func TestDeletionRetainsFinalizerOnPodErrors(t *testing.T) {
 				Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error { return failure },
 			})
 			r := &Reconciler{client: intercepted, apiReader: intercepted, expectationsStore: expect.NewExpectationsStore()}
-			require.NoError(t, r.expectationsStore.AddIndexers(componentutils.PodCliqueExpectationsIndexers()))
+			require.NoError(t, r.expectationsStore.AddIndexers(expectations.PodCliqueExpectationsIndexers()))
 			result := r.triggerDeletionFlow(ctx, logr.Discard(), pclq)
 			require.True(t, result.HasErrors())
 			_, err := result.Result()
@@ -243,7 +243,7 @@ func TestDeletionPreservesOrphanedPods(t *testing.T) {
 	require.NoError(t, cl.Delete(ctx, pclq))
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pclq), pclq))
 	r := &Reconciler{client: cl, apiReader: cl, expectationsStore: expect.NewExpectationsStore()}
-	require.NoError(t, r.expectationsStore.AddIndexers(componentutils.PodCliqueExpectationsIndexers()))
+	require.NoError(t, r.expectationsStore.AddIndexers(expectations.PodCliqueExpectationsIndexers()))
 	result := r.triggerDeletionFlow(ctx, logr.Discard(), pclq)
 	require.False(t, result.HasErrors())
 	require.False(t, result.NeedsRequeue())

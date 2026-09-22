@@ -36,8 +36,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/samber/lo"
-	"k8s.io/apimachinery/pkg/util/sets"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -189,7 +189,7 @@ func (r _resource) runSyncFlow(ctx context.Context, logger logr.Logger, ss *sync
 // recreateStaleScaleOutPCLQs handles a scale-in/out cycle observed by the PCS
 // controller before the PCSG controller deletes the old members. A fresh epoch
 // needs fresh Pods with scheduler-native membership and gates, not label adoption.
-func (r _resource) recreateStaleScaleOutPCLQs(ctx context.Context, ss *syncSnapshot) (componentutils.Set[string], error) {
+func (r _resource) recreateStaleScaleOutPCLQs(ctx context.Context, ss *syncSnapshot) (sets.Set[string], error) {
 	rnr := apicommon.ResourceNameReplica{Name: ss.pcs.Name, Replica: ss.pcsReplicaIndex}
 	configName, err := apicommon.ExtractScalingGroupNameFromPCSGFQN(ss.pcsg.Name, rnr)
 	if err != nil {
@@ -200,7 +200,7 @@ func (r _resource) recreateStaleScaleOutPCLQs(ctx context.Context, ss *syncSnaps
 		pclq := &ss.existingPCLQs[i]
 		existingByName[pclq.Name] = pclq
 	}
-	retiring := make(componentutils.Set[string])
+	retiring := make(sets.Set[string])
 	for replicaIndex, names := range ss.expectedPCLQFQNsPerPCSGReplica {
 		entry, err := componentutils.FindPodGangEntryForPCSGReplica(ss.pgm.Spec.Entries, "", configName, int32(replicaIndex))
 		if err != nil {
@@ -346,8 +346,8 @@ func (r _resource) ensurePCSGScaleInReady(ctx context.Context, ss *syncSnapshot,
 		return groveerr.WrapError(err, errCodeParsePodCliqueScalingGroupReplicaIndex, component.OperationSync,
 			fmt.Sprintf("failed to resolve PodCliqueScalingGroup config name for %s", ss.pcsg.Name))
 	}
-	targetIndexSet := componentutils.NewSet(replicaIndices)
-	targetPCLQNames := make(componentutils.Set[string])
+	targetIndexSet := sets.New(replicaIndices...)
+	targetPCLQNames := make(sets.Set[string])
 	for index := range targetIndexSet {
 		replicaIndex, err := strconv.Atoi(index)
 		if err != nil {
@@ -450,7 +450,7 @@ func (r _resource) createExpectedPCLQs(ctx context.Context, logger logr.Logger, 
 
 // createOrUpdatePCLQs creates or updates all expected PodCliques for the PodCliqueScalingGroup.
 // This is used for the OnDelete update strategy where changes are applied in place rather than through recreation.
-func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, ss *syncSnapshot, retiringPCLQs componentutils.Set[string]) error {
+func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, ss *syncSnapshot, retiringPCLQs sets.Set[string]) error {
 	var tasks []utils.Task
 	for pcsgReplicaIndex, expectedPCLQNames := range ss.expectedPCLQFQNsPerPCSGReplica {
 		for _, pclqFQN := range expectedPCLQNames {

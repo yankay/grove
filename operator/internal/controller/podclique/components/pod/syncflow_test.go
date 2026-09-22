@@ -23,8 +23,9 @@ import (
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
-	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/podclique/expectations"
+	"github.com/ai-dynamo/grove/operator/internal/controller/podclique/expectations"
 	"github.com/ai-dynamo/grove/operator/internal/expect"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
@@ -510,7 +511,7 @@ func TestSelectExcessPodsToDelete_ExcludesPodsAlreadyBeingDeleted(t *testing.T) 
 				ObjectMeta: metav1.ObjectMeta{Name: "pclq-1", Namespace: testNamespace},
 				Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: tt.replicas},
 			}
-			key, err := componentutils.PodGangScopedExpectationsStoreKey(pclq.ObjectMeta, podGangName)
+			key, err := expectations.PodGangScopedExpectationsStoreKey(pclq.ObjectMeta, podGangName)
 			require.NoError(t, err)
 
 			var pods []*corev1.Pod
