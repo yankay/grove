@@ -112,7 +112,7 @@ func TestGangRecoveryPreservesRuntimeTargetsAcrossRestart(t *testing.T) {
 				actual := &grovecorev1alpha1.PodClique{}
 				require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(want), actual))
 				assert.Equal(t, want.UID, actual.UID)
-				assert.Equal(t, want.Spec.Replicas, actual.Spec.Replicas)
+				assert.Equal(t, ptr.Deref(want.Spec.Replicas, 1), ptr.Deref(actual.Spec.Replicas, 1))
 			}
 			untouched, err := componentutils.GetGangRecovery(pcs, 1)
 			require.NoError(t, err)
@@ -133,7 +133,7 @@ func TestGangRecoveryHonorsScaleAcceptedDuringDrain(t *testing.T) {
 	draining, err := componentutils.GetGangRecovery(pcs, 0)
 	require.NoError(t, err)
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pclq), pclq))
-	pclq.Spec.Replicas = 0
+	pclq.Spec.Replicas = ptr.To[int32](0)
 	require.NoError(t, cl.Update(ctx, pclq))
 	require.NoError(t, r.advanceGangRecovery(ctx, pcs, 0, draining))
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pcs), pcs))
@@ -145,7 +145,7 @@ func TestGangRecoveryHonorsScaleAcceptedDuringDrain(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, componentutils.GangRecoveryComplete, finished.Phase)
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pclq), pclq))
-	assert.Zero(t, pclq.Spec.Replicas)
+	assert.Zero(t, ptr.Deref(pclq.Spec.Replicas, 1))
 	assert.Equal(t, types.UID("pcs-0-worker-uid"), pclq.UID)
 }
 
@@ -359,7 +359,7 @@ func recoveryClique(pcs *grovecorev1alpha1.PodCliqueSet, name string, replicas i
 				Name: pcs.Name, UID: pcs.UID, Controller: ptr.To(true),
 			}},
 		},
-		Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: replicas, MinAvailable: ptr.To(int32(1))},
+		Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](replicas), MinAvailable: ptr.To(int32(1))},
 		Status: grovecorev1alpha1.PodCliqueStatus{
 			ReadyReplicas: replicas,
 			Conditions:    []metav1.Condition{{Type: apiconstants.ConditionTypeMinAvailableBreached, Status: metav1.ConditionFalse}},

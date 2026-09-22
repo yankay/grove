@@ -113,7 +113,7 @@ func TestDefault(t *testing.T) {
 							{
 								Name: "test",
 								Spec: grovecorev1alpha1.PodCliqueSpec{
-									Replicas: 1,
+									Replicas: ptr.To[int32](1),
 									RoleName: "test-role",
 									PodSpec: corev1.PodSpec{
 										Containers: []corev1.Container{

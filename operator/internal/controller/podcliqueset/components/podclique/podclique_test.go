@@ -73,7 +73,7 @@ func TestRecreateMissingIdleStandaloneAfterMembershipRemoval(t *testing.T) {
 	require.NoError(t, cl.Get(ctx, routerKey, router))
 	worker := &grovecorev1alpha1.PodClique{}
 	require.NoError(t, cl.Get(ctx, workerKey, worker))
-	worker.Spec.Replicas = 0
+	worker.Spec.Replicas = ptr.To[int32](0)
 	require.NoError(t, cl.Update(ctx, worker))
 	require.NoError(t, pgmOperator.Sync(ctx, logr.Discard(), pcs))
 	require.NoError(t, cl.Get(ctx, pgmKey, pgm))
@@ -90,7 +90,7 @@ func TestRecreateMissingIdleStandaloneAfterMembershipRemoval(t *testing.T) {
 	require.EqualValues(t, 1, pgm.Spec.Entries[0].PodCliques["worker"])
 	require.NoError(t, r.doCreateOrUpdate(ctx, logr.Discard(), pcs, 0, pgm, workerKey))
 	require.NoError(t, cl.Get(ctx, workerKey, worker))
-	require.EqualValues(t, 1, worker.Spec.Replicas)
+	require.EqualValues(t, 1, ptr.Deref(worker.Spec.Replicas, 1))
 	require.Equal(t, apicommon.GenerateAnchorPodGangName(apicommon.ResourceNameReplica{Name: pcs.Name, Replica: 0}, epoch), worker.Labels[apicommon.LabelPodGang])
 	actualRouter := &grovecorev1alpha1.PodClique{}
 	require.NoError(t, cl.Get(ctx, routerKey, actualRouter))

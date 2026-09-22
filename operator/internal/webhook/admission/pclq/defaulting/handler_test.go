@@ -46,13 +46,13 @@ func TestDefaultMinimum(t *testing.T) {
 		{name: "scale ignored", operation: admissionv1.Update, replicas: 5, subresource: "scale"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pclq := &grovecorev1alpha1.PodClique{Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: tc.replicas, MinAvailable: tc.minimum}}
+			pclq := &grovecorev1alpha1.PodClique{Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](tc.replicas), MinAvailable: tc.minimum}}
 			ctx := admission.NewContextWithRequest(t.Context(), admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
 				Operation: tc.operation, SubResource: tc.subresource,
 			}})
 			require.NoError(t, NewHandler().Default(ctx, pclq))
 			require.Equal(t, tc.want, pclq.Spec.MinAvailable)
-			require.Equal(t, tc.replicas, pclq.Spec.Replicas)
+			require.Equal(t, tc.replicas, ptr.Deref(pclq.Spec.Replicas, 1))
 			require.NoError(t, NewHandler().Default(ctx, pclq))
 			require.Equal(t, tc.want, pclq.Spec.MinAvailable, "defaulting must be idempotent")
 		})
@@ -62,6 +62,18 @@ func TestDefaultMinimum(t *testing.T) {
 func TestDefaultInvalidInput(t *testing.T) {
 	require.Error(t, NewHandler().Default(context.Background(), &corev1.Pod{}))
 	require.Error(t, NewHandler().Default(context.Background(), &grovecorev1alpha1.PodClique{}))
+}
+
+func TestDefaultOmittedReplicas(t *testing.T) {
+	pclq := &grovecorev1alpha1.PodClique{}
+	ctx := admission.NewContextWithRequest(t.Context(), admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+		Operation: admissionv1.Create,
+	}})
+	require.NoError(t, NewHandler().Default(ctx, pclq))
+	require.Equal(t, ptr.To(int32(1)), pclq.Spec.Replicas)
+	require.Equal(t, ptr.To(int32(1)), pclq.Spec.MinAvailable)
+	require.NoError(t, NewHandler().Default(ctx, pclq))
+	require.Equal(t, ptr.To(int32(1)), pclq.Spec.Replicas)
 }
 
 func TestRegisterWithManager(t *testing.T) {

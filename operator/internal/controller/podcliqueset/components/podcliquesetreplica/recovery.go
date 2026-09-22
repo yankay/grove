@@ -190,7 +190,7 @@ func (s *recoverySnapshot) available(pcs *grovecorev1alpha1.PodCliqueSet, index 
 		if pclq == nil || !pclq.DeletionTimestamp.IsZero() {
 			return false
 		}
-		if pclq.Spec.Replicas == 0 {
+		if ptr.Deref(pclq.Spec.Replicas, 1) == 0 {
 			return true
 		}
 		minimum := ptr.Deref(pclq.Spec.MinAvailable, 1)

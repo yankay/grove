@@ -41,7 +41,7 @@ func Test_ZR14_MemberScalingLifecycle(t *testing.T) {
 				pcs.Spec.UpdateStrategy = &grovecorev1alpha1.PodCliqueSetUpdateStrategy{Type: strategy}
 				idlePCSGConfig(t, pcs).Replicas = ptr.To(int32(1))
 				member := idleClique(t, pcs, "decode")
-				member.Spec.Replicas, member.Spec.MinAvailable = 3, ptr.To(int32(3))
+				member.Spec.Replicas, member.Spec.MinAvailable = ptr.To[int32](3), ptr.To(int32(3))
 			})
 			defer cleanup()
 			waitForPodCountAndReady(t, tc, 5)
@@ -60,7 +60,7 @@ func Test_ZR14_MemberScalingLifecycle(t *testing.T) {
 				require.Len(t, podsForClique(t, tc, member.Name), int(replicas))
 				require.NoError(t, tc.Client.Get(ctx, client.ObjectKeyFromObject(member), member))
 				require.Equal(t, memberUID, member.UID)
-				require.Equal(t, replicas, member.Spec.Replicas)
+				require.Equal(t, replicas, ptr.Deref(member.Spec.Replicas, 1))
 				require.EqualValues(t, 3, *member.Spec.MinAvailable)
 				require.NoError(t, tc.Client.Get(ctx, client.ObjectKeyFromObject(group), group))
 				require.Equal(t, groupUID, group.UID)

@@ -45,6 +45,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -246,7 +247,7 @@ func (r _resource) getPCSGTemplateNumPods(pcs *grovecorev1alpha1.PodCliqueSet, p
 		if !ok {
 			continue
 		}
-		pcsgTemplateNumPods += int(pclqTemplateSpec.Spec.Replicas)
+		pcsgTemplateNumPods += int(ptr.Deref(pclqTemplateSpec.Spec.Replicas, 1))
 	}
 	return pcsgTemplateNumPods
 }
@@ -357,9 +358,9 @@ func (r _resource) buildResource(logger logr.Logger, ss *syncSnapshot, pcsgRepli
 	// ------------------------------------
 	if pclqExists {
 		// If an HPA is mutating the number of replicas, then it should not be overwritten by the template spec replicas.
-		currentPCLQReplicas := pclq.Spec.Replicas
+		currentPCLQReplicas := ptr.Deref(pclq.Spec.Replicas, 1)
 		pclq.Spec = *pclqTemplateSpec.Spec.DeepCopy()
-		pclq.Spec.Replicas = currentPCLQReplicas
+		pclq.Spec.Replicas = ptr.To[int32](currentPCLQReplicas)
 	} else {
 		pclq.Spec = *pclqTemplateSpec.Spec.DeepCopy()
 	}

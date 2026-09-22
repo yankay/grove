@@ -871,6 +871,11 @@ func (in *PodCliqueSetUpdateStrategy) DeepCopy() *PodCliqueSetUpdateStrategy {
 func (in *PodCliqueSpec) DeepCopyInto(out *PodCliqueSpec) {
 	*out = *in
 	in.PodSpec.DeepCopyInto(&out.PodSpec)
+	if in.Replicas != nil {
+		in, out := &in.Replicas, &out.Replicas
+		*out = new(int32)
+		**out = **in
+	}
 	if in.MinAvailable != nil {
 		in, out := &in.MinAvailable, &out.MinAvailable
 		*out = new(int32)

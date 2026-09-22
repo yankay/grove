@@ -145,7 +145,7 @@ func TestMemberScaleAdmission(t *testing.T) {
 	require.NoError(t, cl.Create(ctx, member))
 	uid := member.UID
 	probe := member.DeepCopy()
-	probe.Spec.Replicas = 0
+	probe.Spec.Replicas = ptr.To[int32](0)
 	require.Eventually(t, func() bool {
 		return apierrors.IsForbidden(cl.Update(ctx, probe.DeepCopy(), client.DryRunAll))
 	}, admissionTimeout, pollInterval, "the production member webhook must be active")
@@ -154,7 +154,7 @@ func TestMemberScaleAdmission(t *testing.T) {
 		t.Run("subresource="+subresource, func(t *testing.T) {
 			for _, target := range []int32{4, 3, 0, 2} {
 				candidate := member.DeepCopy()
-				candidate.Spec.Replicas = target
+				candidate.Spec.Replicas = ptr.To[int32](target)
 				var updateErr error
 				if subresource == "" {
 					updateErr = cl.Update(ctx, candidate)
@@ -180,7 +180,7 @@ func TestMemberScaleAdmission(t *testing.T) {
 					require.NoError(t, updateErr)
 				}
 				require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(member), member))
-				require.Equal(t, expected, member.Spec.Replicas)
+				require.Equal(t, expected, ptr.Deref(member.Spec.Replicas, 1))
 				require.Equal(t, uid, member.UID)
 				require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(group), group))
 				require.EqualValues(t, 1, group.Spec.Replicas, "member scaling must not scale the group")
@@ -203,6 +203,13 @@ func TestMemberScaleAdmission(t *testing.T) {
 			require.True(t, found)
 			require.EqualValues(t, 1, value)
 		}
+		typed := testutils.NewPodCliqueBuilder("pcs", "pcs-uid", "typed-omitted", "default", 0).Build()
+		typed.Spec.Replicas = nil
+		typed.Spec.MinAvailable = nil
+		require.NoError(t, cl.Create(ctx, typed))
+		require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(typed), typed))
+		require.Equal(t, ptr.To(int32(1)), typed.Spec.Replicas)
+		require.Equal(t, ptr.To(int32(1)), typed.Spec.MinAvailable)
 		for _, replicas := range []int32{0, 1, 3} {
 			t.Run(fmt.Sprintf("replicas=%d", replicas), func(t *testing.T) {
 				pclq := testutils.NewPodCliqueBuilder("pcs", "pcs-uid", fmt.Sprintf("minimum-%d", replicas), "default", 0).
@@ -212,7 +219,7 @@ func TestMemberScaleAdmission(t *testing.T) {
 				require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pclq), pclq))
 				require.NotNil(t, pclq.Spec.MinAvailable)
 				require.Equal(t, max(int32(1), replicas), *pclq.Spec.MinAvailable)
-				require.Equal(t, replicas, pclq.Spec.Replicas)
+				require.Equal(t, replicas, ptr.Deref(pclq.Spec.Replicas, 1))
 				increasedFields := []string{"spec.minAvailable"}
 				if replicas > 0 {
 					increasedFields = append(increasedFields, "spec")

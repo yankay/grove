@@ -344,7 +344,7 @@ func TestMutateTopologyLevelUnavailableConditions(t *testing.T) {
 						{
 							Name: "worker",
 							Spec: grovecorev1alpha1.PodCliqueSpec{
-								Replicas:     1,
+								Replicas:     ptr.To[int32](1),
 								MinAvailable: ptr.To(int32(1)),
 							},
 						},
@@ -953,7 +953,7 @@ func TestIsStandalonePCLQUpdatedIdle(t *testing.T) {
 		Build()
 
 	idle := markStandalonePCLQConverged(t, pcs, testutils.NewPodCliqueBuilder(testPCSName, pcsUID, "worker", testNamespace, 0).Build(), hash)
-	idle.Spec.Replicas = 0
+	idle.Spec.Replicas = ptr.To[int32](0)
 	idle.Status.ReadyReplicas = 0
 	idle.Status.UpdatedReplicas = 0
 

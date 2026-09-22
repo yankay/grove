@@ -74,7 +74,8 @@ type PodCliqueSpec struct {
 	// explicit 0 is preserved.
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=0
-	Replicas int32 `json:"replicas"`
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
 	// MinAvailable serves two purposes:
 	// 1. It defines the minimum number of pods that are guaranteed to be gang scheduled.
 	// 2. It defines the minimum requirement of available pods in a PodClique. Violation of this threshold will result

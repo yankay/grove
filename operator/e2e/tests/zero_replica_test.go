@@ -252,7 +252,7 @@ func Test_ZR4_AdmissionValidationAndRetry(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "invalid-pclq", Namespace: tc.Namespace},
 		Spec:       template,
 	}
-	invalidPCLQ.Spec.Replicas = 1
+	invalidPCLQ.Spec.Replicas = ptr.To[int32](1)
 	invalidPCLQ.Spec.MinAvailable = ptr.To(int32(2))
 	requireInvalidCause(t, tc.Client.Create(ctx, invalidPCLQ), "spec")
 	assertObjectNotFound(t, ctx, tc, client.ObjectKeyFromObject(invalidPCLQ), &grovecorev1alpha1.PodClique{})
@@ -270,7 +270,7 @@ func Test_ZR4_AdmissionValidationAndRetry(t *testing.T) {
 
 	invalidPCS := loadIdlePCS(t, "invalid-pcs-template")
 	invalidTemplate := idleClique(t, invalidPCS, "worker")
-	invalidTemplate.Spec.Replicas = 1
+	invalidTemplate.Spec.Replicas = ptr.To[int32](1)
 	invalidTemplate.Spec.MinAvailable = ptr.To(int32(2))
 	requireInvalidCause(t, tc.Client.Create(ctx, invalidPCS), "spec.template.cliques[1].spec")
 	assertObjectNotFound(t, ctx, tc, client.ObjectKeyFromObject(invalidPCS), &grovecorev1alpha1.PodCliqueSet{})
@@ -290,8 +290,8 @@ func Test_ZR4_AdmissionValidationAndRetry(t *testing.T) {
 		assertRejectedScaleUpdate(t, ctx, tc, guardedName, 2)
 	}
 	guarded := waitForPCLQ(t, ctx, tc, guardedName)
-	if guarded.Spec.Replicas != 4 {
-		t.Fatalf("stored replicas = %d after rejected retries, want 4", guarded.Spec.Replicas)
+	if ptr.Deref(guarded.Spec.Replicas, 1) != 4 {
+		t.Fatalf("stored replicas = %d after rejected retries, want 4", ptr.Deref(guarded.Spec.Replicas, 1))
 	}
 	if got := countEvents(t, ctx, tc, guarded.UID, ""); got != beforeEvents {
 		t.Fatalf("warning event count changed after rejected scale retries: %d -> %d", beforeEvents, got)
@@ -608,7 +608,7 @@ func Test_ZR8_RecoveryPreservesLatestScaleTargets(t *testing.T) {
 	const holdFinalizer = "e2e.grove.io/hold-recovery"
 	ctx := context.Background()
 	tc, cleanup := prepareIdleWorkload(t, ctx, 6, pcsName, 0, func(pcs *grovecorev1alpha1.PodCliqueSet) {
-		idleClique(t, pcs, "guarded").Spec.Replicas = 2
+		idleClique(t, pcs, "guarded").Spec.Replicas = ptr.To[int32](2)
 		idlePCSGConfig(t, pcs).Replicas = ptr.To(int32(1))
 	})
 	defer cleanup()
@@ -930,7 +930,7 @@ func prepareIdleWorkload(
 		}),
 	)
 	pcs := loadIdlePCS(t, name)
-	idleClique(t, pcs, "worker").Spec.Replicas = workerReplicas
+	idleClique(t, pcs, "worker").Spec.Replicas = ptr.To[int32](workerReplicas)
 	if mutate != nil {
 		mutate(pcs)
 	}
@@ -1367,12 +1367,11 @@ func assertRejectedReplicaUpdate(t *testing.T, ctx context.Context, tc *testctx.
 	t.Helper()
 	before := waitForPCLQ(t, ctx, tc, name)
 	updated := before.DeepCopy()
-	updated.Spec.Replicas = replicas
+	updated.Spec.Replicas = ptr.To[int32](replicas)
 	requireInvalidCause(t, tc.Client.Update(ctx, updated), "spec")
 	after := waitForPCLQ(t, ctx, tc, name)
-	if after.Spec.Replicas != before.Spec.Replicas || after.ResourceVersion != before.ResourceVersion {
-		t.Fatalf("rejected update changed stored object: replicas %d -> %d, resourceVersion %s -> %s",
-			before.Spec.Replicas, after.Spec.Replicas, before.ResourceVersion, after.ResourceVersion)
+	if ptr.Deref(after.Spec.Replicas, 1) != ptr.Deref(before.Spec.Replicas, 1) || after.ResourceVersion != before.ResourceVersion {
+		t.Fatalf("rejected update changed stored object: replicas %d -> %d, resourceVersion %s -> %s", ptr.Deref(before.Spec.Replicas, 1), ptr.Deref(after.Spec.Replicas, 1), before.ResourceVersion, after.ResourceVersion)
 	}
 	assertRejectedScaleUpdate(t, ctx, tc, name, replicas)
 }
@@ -1386,8 +1385,8 @@ func assertRejectedScaleUpdate(t *testing.T, ctx context.Context, tc *testctx.Te
 	}
 	requireInvalidCause(t, tc.Client.SubResource("scale").Update(ctx, before, client.WithSubResourceBody(scale)), "spec")
 	after := waitForPCLQ(t, ctx, tc, name)
-	if after.Spec.Replicas != before.Spec.Replicas {
-		t.Fatalf("rejected scale changed stored replicas: %d -> %d", before.Spec.Replicas, after.Spec.Replicas)
+	if ptr.Deref(after.Spec.Replicas, 1) != ptr.Deref(before.Spec.Replicas, 1) {
+		t.Fatalf("rejected scale changed stored replicas: %d -> %d", ptr.Deref(before.Spec.Replicas, 1), ptr.Deref(after.Spec.Replicas, 1))
 	}
 }
 

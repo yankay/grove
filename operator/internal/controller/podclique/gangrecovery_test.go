@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 )
@@ -88,7 +89,7 @@ func TestGangRecoveryDrainsOldPodsAcrossRestart(t *testing.T) {
 	requeue, err = result.Result()
 	require.NoError(t, err)
 	assert.Zero(t, requeue.RequeueAfter)
-	assert.Equal(t, int32(3), pclq.Spec.Replicas)
+	assert.Equal(t, int32(3), ptr.Deref(pclq.Spec.Replicas, 1))
 
 	// A delayed pre-recovery create is removed even after recovery completed.
 	recovery.Phase = componentutils.GangRecoveryComplete

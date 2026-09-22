@@ -44,9 +44,12 @@ func (h *Handler) Default(ctx context.Context, obj runtime.Object) error {
 	if err != nil {
 		return err
 	}
+	if req.SubResource == "" && pclq.Spec.Replicas == nil {
+		pclq.Spec.Replicas = ptr.To(int32(1))
+	}
 	// Updating a legacy object must not silently establish a new immutable quorum.
 	if req.Operation == admissionv1.Create && req.SubResource == "" && pclq.Spec.MinAvailable == nil {
-		pclq.Spec.MinAvailable = ptr.To(max(int32(1), pclq.Spec.Replicas))
+		pclq.Spec.MinAvailable = ptr.To(max(int32(1), ptr.Deref(pclq.Spec.Replicas, 1)))
 	}
 	return nil
 }

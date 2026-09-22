@@ -38,6 +38,7 @@ import (
 	"github.com/samber/lo"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -296,9 +297,9 @@ func getPCSGPodIndexOffset(ss *syncSnapshot, pcsgReplicaIndex int, cliqueName st
 		if existingPCLQ, ok := lo.Find(ss.existingPCLQs, func(pclq grovecorev1alpha1.PodClique) bool {
 			return pclq.Name == pclqName
 		}); ok {
-			replicas = existingPCLQ.Spec.Replicas
+			replicas = ptr.Deref(existingPCLQ.Spec.Replicas, 1)
 		} else if template := componentutils.FindPodCliqueTemplateSpecByName(ss.pcs, memberCliqueName); template != nil {
-			replicas = template.Spec.Replicas
+			replicas = ptr.Deref(template.Spec.Replicas, 1)
 		} else {
 			return 0, fmt.Errorf("PodClique template %q not found in PodCliqueSet %q", memberCliqueName, ss.pcs.Name)
 		}

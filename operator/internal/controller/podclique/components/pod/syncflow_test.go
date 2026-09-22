@@ -509,7 +509,7 @@ func TestSelectExcessPodsToDelete_ExcludesPodsAlreadyBeingDeleted(t *testing.T) 
 
 			pclq := &grovecorev1alpha1.PodClique{
 				ObjectMeta: metav1.ObjectMeta{Name: "pclq-1", Namespace: testNamespace},
-				Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: tt.replicas},
+				Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](tt.replicas)},
 			}
 			key, err := expectations.PodGangScopedExpectationsStoreKey(pclq.ObjectMeta, podGangName)
 			require.NoError(t, err)

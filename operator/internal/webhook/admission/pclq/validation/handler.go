@@ -28,6 +28,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -69,7 +70,7 @@ func (h *Handler) validatePodCliqueUpdate(req admission.Request) admission.Respo
 	if err := json.Unmarshal(req.Object.Raw, newPCLQ); err != nil {
 		return admission.Errored(http.StatusBadRequest, fmt.Errorf("decoding new PodClique: %w", err))
 	}
-	if newPCLQ.Spec.Replicas == 0 && oldPCLQ.Spec.Replicas != newPCLQ.Spec.Replicas &&
+	if ptr.Deref(newPCLQ.Spec.Replicas, 1) == 0 && ptr.Deref(oldPCLQ.Spec.Replicas, 1) != ptr.Deref(newPCLQ.Spec.Replicas, 1) &&
 		(isScalingGroupOwned(oldPCLQ) || isScalingGroupOwned(newPCLQ)) {
 		return admission.Denied(denialMessage)
 	}
@@ -90,7 +91,7 @@ func (h *Handler) validateScaleUpdate(ctx context.Context, req admission.Request
 	if !isScalingGroupOwned(pclq) {
 		return admission.Allowed("standalone PodClique scale update is valid")
 	}
-	if scale.Spec.Replicas != pclq.Spec.Replicas {
+	if scale.Spec.Replicas != ptr.Deref(pclq.Spec.Replicas, 1) {
 		if scale.Spec.Replicas == 0 {
 			return admission.Denied(denialMessage)
 		}

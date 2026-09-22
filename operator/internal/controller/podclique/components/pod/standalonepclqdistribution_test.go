@@ -589,7 +589,7 @@ func anchorEntryWithCliques(epoch string, anchorIndex int32, cliques map[string]
 func pclqWithReplicas(replicas int32) *grovecorev1alpha1.PodClique {
 	return &grovecorev1alpha1.PodClique{
 		ObjectMeta: metav1.ObjectMeta{Name: testCliqueName, Namespace: testNamespace},
-		Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: replicas},
+		Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](replicas)},
 	}
 }
 

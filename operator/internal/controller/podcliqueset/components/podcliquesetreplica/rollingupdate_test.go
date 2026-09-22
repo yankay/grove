@@ -53,7 +53,7 @@ func TestIsPCLQUpdateCompleteIdle(t *testing.T) {
 	pclq.Status.CurrentPodTemplateHash = ptr.To(expectedTemplateHash)
 	pclq.Status.CurrentPodCliqueSetGenerationHash = ptr.To(hash)
 	// Idle: no pods, so ready/updated stay at zero.
-	pclq.Spec.Replicas = 0
+	pclq.Spec.Replicas = ptr.To[int32](0)
 	pclq.Status.ReadyReplicas = 0
 	pclq.Status.UpdatedReplicas = 0
 

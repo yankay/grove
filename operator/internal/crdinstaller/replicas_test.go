@@ -277,12 +277,32 @@ func TestReplicaValidationUpgrade(t *testing.T) {
 		require.Eventually(t, func() bool {
 			return apierrors.IsInvalid(cl.Create(ctx, probe.DeepCopy(), client.DryRunAll))
 		}, convergenceTimeout, pollInterval)
+		t.Run("typed template replica intent", func(t *testing.T) {
+			for _, tc := range []struct {
+				name     string
+				replicas *int32
+				want     int32
+			}{
+				{name: "omitted", want: 1},
+				{name: "idle", replicas: ptr.To(int32(0)), want: 0},
+				{name: "active", replicas: ptr.To(int32(3)), want: 3},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					obj := testutils.NewPodCliqueSetBuilder("template-"+tc.name, pcs.Namespace, "").
+						WithPodCliqueParameters("worker", 1, nil).Build()
+					obj.Spec.Template.Cliques[0].Spec.Replicas = tc.replicas
+					require.NoError(t, cl.Create(ctx, obj))
+					require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(obj), obj))
+					require.Equal(t, ptr.To(tc.want), obj.Spec.Template.Cliques[0].Spec.Replicas)
+				})
+			}
+		})
 		pcs.Spec.Template.Cliques[0].Spec.PodSpec.Containers[0].Image = "test:v2"
 		require.NoError(t, cl.Update(ctx, pcs))
 		require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pcs), pcs))
 		require.Equal(t, "test:v2", pcs.Spec.Template.Cliques[0].Spec.PodSpec.Containers[0].Image)
-		require.EqualValues(t, 1, pcs.Spec.Template.Cliques[0].Spec.Replicas)
-		pcs.Spec.Template.Cliques[0].Spec.Replicas = 2
+		require.EqualValues(t, 1, ptr.Deref(pcs.Spec.Template.Cliques[0].Spec.Replicas, 1))
+		pcs.Spec.Template.Cliques[0].Spec.Replicas = ptr.To[int32](2)
 		require.True(t, apierrors.IsInvalid(cl.Update(ctx, pcs)))
 	})
 }

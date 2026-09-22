@@ -73,7 +73,7 @@ func (r _resource) processPendingUpdates(ctx context.Context, logger logr.Logger
 		return err
 	}
 
-	desiredNumPods := int(ss.pclq.Spec.Replicas)
+	desiredNumPods := int(ptr.Deref(ss.pclq.Spec.Replicas, 1))
 
 	// Completion is readiness-aware. End the update once no old-hash Pods are awaiting replacement and the
 	// desired number of new-hash Pods are Ready. Old Pods already being deleted do not block completion, so

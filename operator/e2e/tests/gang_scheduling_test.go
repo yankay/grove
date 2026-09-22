@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -246,7 +247,7 @@ func waitForWakeState(ctx context.Context, t *testing.T, tc *testctx.TestContext
 		if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: idlePCLQName}, idle); err != nil {
 			return false, client.IgnoreNotFound(err)
 		}
-		if idle.Spec.Replicas != 0 || len(idle.Spec.StartsAfter) != 0 {
+		if ptr.Deref(idle.Spec.Replicas, 1) != 0 || len(idle.Spec.StartsAfter) != 0 {
 			return false, nil
 		}
 		podGangs := &groveschedulerv1alpha1.PodGangList{}
@@ -365,7 +366,7 @@ func assertOwnerReferenceBlocksIndependentScale(t *testing.T, ctx context.Contex
 	}
 	noOpScale := &autoscalingv1.Scale{
 		ObjectMeta: metav1.ObjectMeta{Name: pclqName, Namespace: tc.Namespace},
-		Spec:       autoscalingv1.ScaleSpec{Replicas: pclq.Spec.Replicas},
+		Spec:       autoscalingv1.ScaleSpec{Replicas: ptr.Deref(pclq.Spec.Replicas, 1)},
 	}
 	if err := tc.Client.SubResource("scale").Update(ctx, pclq, client.WithSubResourceBody(noOpScale)); err != nil {
 		t.Fatalf("Replicas no-op scale on PCSG-owned PodClique was rejected: %v", err)
@@ -383,7 +384,7 @@ func assertOwnerReferenceBlocksIndependentScale(t *testing.T, ctx context.Contex
 		if err := tc.Client.Get(ctx, key, current); err != nil {
 			return err
 		}
-		current.Spec.Replicas = 0
+		current.Spec.Replicas = ptr.To[int32](0)
 		return tc.Client.Update(ctx, current)
 	})
 	if !apierrors.IsForbidden(err) {
@@ -406,8 +407,8 @@ func assertPCLQReplicas(t *testing.T, ctx context.Context, tc *testctx.TestConte
 	if err := tc.Client.Get(ctx, client.ObjectKey{Namespace: tc.Namespace, Name: name}, pclq); err != nil {
 		t.Fatalf("Failed to get PodClique %s: %v", name, err)
 	}
-	if pclq.Spec.Replicas != expected {
-		t.Fatalf("PodClique %s replicas = %d, want %d", name, pclq.Spec.Replicas, expected)
+	if ptr.Deref(pclq.Spec.Replicas, 1) != expected {
+		t.Fatalf("PodClique %s replicas = %d, want %d", name, ptr.Deref(pclq.Spec.Replicas, 1), expected)
 	}
 }
 

@@ -918,8 +918,8 @@ func TestSyncPCSGPodIndexOffsetsUsesCurrentReplicaCounts(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "test-pcs", Namespace: "default"},
 		Spec: grovecorev1alpha1.PodCliqueSetSpec{Template: grovecorev1alpha1.PodCliqueSetTemplateSpec{
 			Cliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{
-				{Name: "leader", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1}},
-				{Name: "worker", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 2}},
+				{Name: "leader", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1)}},
+				{Name: "worker", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](2)}},
 			},
 		}},
 	}
@@ -937,7 +937,7 @@ func TestSyncPCSGPodIndexOffsetsUsesCurrentReplicaCounts(t *testing.T) {
 			apicommon.LabelPodCliqueScalingGroup:             "test-pcs-0-engine",
 			apicommon.LabelPodCliqueScalingGroupReplicaIndex: "0",
 		},
-	}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 2}}
+	}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](2)}}
 	worker := grovecorev1alpha1.PodClique{ObjectMeta: metav1.ObjectMeta{
 		Name:      "test-pcs-0-engine-0-worker",
 		Namespace: "default",
@@ -948,7 +948,7 @@ func TestSyncPCSGPodIndexOffsetsUsesCurrentReplicaCounts(t *testing.T) {
 		Annotations: map[string]string{
 			apiconstants.AnnotationPodCliqueScalingGroupPodIndexOffset: "1",
 		},
-	}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 2}}
+	}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](2)}}
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, grovecorev1alpha1.AddToScheme(scheme))

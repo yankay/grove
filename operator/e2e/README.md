@@ -137,6 +137,8 @@ a universal replica-preservation policy for every recovery path.
 
 ### Direct-Object Admission
 
+`PodCliqueSpec.Replicas` is now `*int32` with `json:"replicas,omitempty"`. Go clients must use a pointer for explicit replica targets, including zero; nil omits the field and defaults to one. JSON/YAML replica values remain integers. Serialization, defaulting, and API-server tests cover both direct PodCliques and embedded PodCliqueSet templates.
+
 New PodCliques default an omitted `minAvailable` to `max(1, replicas)` without
 changing explicit zero replicas. PCSGs retain their existing minimum default of
 one. Explicit non-positive minima are rejected on create; positive minima cannot

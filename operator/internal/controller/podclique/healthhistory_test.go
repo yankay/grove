@@ -31,7 +31,7 @@ import (
 func TestPositiveScalePreservesBreachAndTerminationDelay(t *testing.T) {
 	pclq := &grovecorev1alpha1.PodClique{
 		ObjectMeta: metav1.ObjectMeta{Name: "worker", Generation: 1},
-		Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: 3, MinAvailable: ptr.To(int32(2))},
+		Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](3), MinAvailable: ptr.To(int32(2))},
 		Status:     grovecorev1alpha1.PodCliqueStatus{ReadyReplicas: 3, ScheduledReplicas: 3},
 	}
 	mutateMinAvailableBreachedCondition(pclq, 0, 0)
@@ -41,7 +41,7 @@ func TestPositiveScalePreservesBreachAndTerminationDelay(t *testing.T) {
 	meta.FindStatusCondition(pclq.Status.Conditions, constants.ConditionTypeMinAvailableBreached).LastTransitionTime = breachedAt
 
 	for _, replicas := range []int32{4, 2} {
-		pclq.Spec.Replicas = replicas
+		pclq.Spec.Replicas = ptr.To[int32](replicas)
 		pclq.Generation++
 		candidates, _ := componentutils.GetMinAvailableBreachedPCLQInfo(
 			[]grovecorev1alpha1.PodClique{*pclq}, time.Minute, breachedAt.Add(2*time.Minute))
@@ -65,7 +65,7 @@ func TestHealthHistoryResetsOnlyOnObservedLifecycleTransitions(t *testing.T) {
 		t.Run(transition, func(t *testing.T) {
 			pclq := &grovecorev1alpha1.PodClique{
 				ObjectMeta: metav1.ObjectMeta{Generation: 1},
-				Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: 2, MinAvailable: ptr.To(int32(2))},
+				Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](2), MinAvailable: ptr.To(int32(2))},
 				Status:     grovecorev1alpha1.PodCliqueStatus{ReadyReplicas: 2, ScheduledReplicas: 2},
 			}
 			mutateMinAvailableBreachedCondition(pclq, 0, 0)
@@ -73,9 +73,9 @@ func TestHealthHistoryResetsOnlyOnObservedLifecycleTransitions(t *testing.T) {
 			pclq.Generation++
 			switch transition {
 			case "idle":
-				pclq.Spec.Replicas = 0
+				pclq.Spec.Replicas = ptr.To[int32](0)
 				mutateMinAvailableBreachedCondition(pclq, 0, 0)
-				pclq.Spec.Replicas = 2
+				pclq.Spec.Replicas = ptr.To[int32](2)
 			case "update":
 				pclq.Status.UpdateProgress = &grovecorev1alpha1.PodCliqueUpdateProgress{}
 				mutateMinAvailableBreachedCondition(pclq, 0, 0)

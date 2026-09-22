@@ -102,7 +102,7 @@ func TestPCSGMinimumScheduled(t *testing.T) {
 		{
 			name: "idle child cannot satisfy the minimum",
 			mutate: func(_ *syncSnapshot, _ *grovecorev1alpha1.PodCliqueScalingGroup, pclqs []*grovecorev1alpha1.PodClique, _ []*corev1.Pod) {
-				pclqs[0].Spec.Replicas = 0
+				pclqs[0].Spec.Replicas = ptr.To[int32](0)
 			},
 		},
 		{
@@ -257,13 +257,13 @@ func minimumSchedulingFixture() (*syncSnapshot, *grovecorev1alpha1.PodCliqueScal
 				WithOwnerReference("PodCliqueScalingGroup", pcsg.Name, pcsg.UID).Build()
 			pclq.UID = types.UID(name)
 			pclq.Spec.MinAvailable = ptr.To(int32(cliqueIndex + 1))
-			pclq.Spec.Replicas = *pclq.Spec.MinAvailable
+			pclq.Spec.Replicas = ptr.To[int32](*pclq.Spec.MinAvailable)
 			pclqs = append(pclqs, pclq)
 			gangName := apicommon.GenerateAnchorPodGangName(apicommon.ResourceNameReplica{Name: pcs.Name, Replica: 0}, "anchor")
 			if replica >= 2 {
 				gangName = apicommon.GenerateNonAnchorPodGangName(apicommon.ResourceNameReplica{Name: pcs.Name, Replica: 0}, "scale", "sg", int32(replica))
 			}
-			for podIndex := range pclq.Spec.Replicas {
+			for podIndex := range ptr.Deref(pclq.Spec.Replicas, 1) {
 				pods = append(pods, &corev1.Pod{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: fmt.Sprintf("%s-%d", name, podIndex), Namespace: pcs.Namespace,

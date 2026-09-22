@@ -1905,7 +1905,7 @@ func TestScalingGroupMemberReplicaValidation(t *testing.T) {
 			name:      "create rejects zero member replicas in an active group",
 			operation: admissionv1.Create,
 			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
-				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = ptr.To[int32](0)
 			},
 			errorMatchers: []testutils.ErrorMatcher{
 				{ErrorType: field.ErrorTypeInvalid, Field: "spec.template.cliques[1].spec.replicas"},
@@ -1915,7 +1915,7 @@ func TestScalingGroupMemberReplicaValidation(t *testing.T) {
 			name:      "create rejects zero member replicas even in an idle group",
 			operation: admissionv1.Create,
 			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
-				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = ptr.To[int32](0)
 				pcs.Spec.Template.PodCliqueScalingGroupConfigs[0].Replicas = ptr.To(int32(0))
 			},
 			errorMatchers: []testutils.ErrorMatcher{
@@ -1933,7 +1933,7 @@ func TestScalingGroupMemberReplicaValidation(t *testing.T) {
 			name:      "update rejects positive to zero member replicas",
 			operation: admissionv1.Update,
 			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
-				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = ptr.To[int32](0)
 			},
 			errorMatchers: []testutils.ErrorMatcher{
 				{ErrorType: field.ErrorTypeInvalid, Field: "spec.template.cliques[1].spec.replicas"},
@@ -1943,7 +1943,7 @@ func TestScalingGroupMemberReplicaValidation(t *testing.T) {
 			name:      "update rejects zero member replicas while idling the group",
 			operation: admissionv1.Update,
 			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
-				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = ptr.To[int32](0)
 				pcs.Spec.Template.PodCliqueScalingGroupConfigs[0].Replicas = ptr.To(int32(0))
 			},
 			errorMatchers: []testutils.ErrorMatcher{
@@ -1954,7 +1954,7 @@ func TestScalingGroupMemberReplicaValidation(t *testing.T) {
 			name:      "update uses the new member index after reordering",
 			operation: admissionv1.Update,
 			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
-				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = ptr.To[int32](0)
 				pcs.Spec.Template.Cliques[0], pcs.Spec.Template.Cliques[1] = pcs.Spec.Template.Cliques[1], pcs.Spec.Template.Cliques[0]
 			},
 			errorMatchers: []testutils.ErrorMatcher{
@@ -1965,10 +1965,10 @@ func TestScalingGroupMemberReplicaValidation(t *testing.T) {
 			name:      "update allows standalone positive to zero replicas",
 			operation: admissionv1.Update,
 			prepareOld: func(pcs *grovecorev1alpha1.PodCliqueSet) {
-				pcs.Spec.Template.Cliques[0].Spec.Replicas = 1
+				pcs.Spec.Template.Cliques[0].Spec.Replicas = ptr.To[int32](1)
 			},
 			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
-				pcs.Spec.Template.Cliques[0].Spec.Replicas = 0
+				pcs.Spec.Template.Cliques[0].Spec.Replicas = ptr.To[int32](0)
 			},
 		},
 		{
@@ -1982,7 +1982,7 @@ func TestScalingGroupMemberReplicaValidation(t *testing.T) {
 			name:      "metadata-only update preserves legacy zero member replicas",
 			operation: admissionv1.Update,
 			prepareOld: func(pcs *grovecorev1alpha1.PodCliqueSet) {
-				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = ptr.To[int32](0)
 			},
 			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
 				pcs.Annotations = map[string]string{"example.com/note": "updated"}
@@ -1992,7 +1992,7 @@ func TestScalingGroupMemberReplicaValidation(t *testing.T) {
 			name:      "finalizer removal preserves legacy zero member replicas",
 			operation: admissionv1.Update,
 			prepareOld: func(pcs *grovecorev1alpha1.PodCliqueSet) {
-				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = ptr.To[int32](0)
 				pcs.Finalizers = []string{"grove.io/finalizer"}
 				pcs.DeletionTimestamp = ptr.To(metav1.Now())
 			},
@@ -2004,10 +2004,10 @@ func TestScalingGroupMemberReplicaValidation(t *testing.T) {
 			name:      "update repairs legacy zero member replicas",
 			operation: admissionv1.Update,
 			prepareOld: func(pcs *grovecorev1alpha1.PodCliqueSet) {
-				pcs.Spec.Template.Cliques[1].Spec.Replicas = 0
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = ptr.To[int32](0)
 			},
 			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
-				pcs.Spec.Template.Cliques[1].Spec.Replicas = 1
+				pcs.Spec.Template.Cliques[1].Spec.Replicas = ptr.To[int32](1)
 			},
 		},
 	}
@@ -2015,7 +2015,7 @@ func TestScalingGroupMemberReplicaValidation(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			oldPCS := createTestPodCliqueSet("inference")
-			oldPCS.Spec.Template.Cliques[0].Spec.Replicas = 0
+			oldPCS.Spec.Template.Cliques[0].Spec.Replicas = ptr.To[int32](0)
 			oldPCS.Spec.Template.Cliques = append(oldPCS.Spec.Template.Cliques, createPodCliqueTemplate("worker"))
 			oldPCS.Spec.Template.PodCliqueScalingGroupConfigs = []grovecorev1alpha1.PodCliqueScalingGroupConfig{{
 				Name:         "workers",

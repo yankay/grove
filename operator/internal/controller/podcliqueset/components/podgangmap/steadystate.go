@@ -258,7 +258,7 @@ func refreshStandalonePodCliqueCounts(entries []grovecorev1alpha1.PodGangEntry,
 	desiredCounts := componentutils.GetStandalonePCLQReplicasFromPCSTemplateSpec(pcs)
 	for _, standalonePCLQ := range standalonePCLQs {
 		cliqueName := apicommon.ExtractPodCliqueNameFromStandalonePCLQFQN(standalonePCLQ.Name, pcsRnr)
-		desiredCounts[cliqueName] = standalonePCLQ.Spec.Replicas
+		desiredCounts[cliqueName] = ptr.Deref(standalonePCLQ.Spec.Replicas, 1)
 	}
 	for cliqueName, replicas := range desiredCounts {
 		if replicas == 0 {

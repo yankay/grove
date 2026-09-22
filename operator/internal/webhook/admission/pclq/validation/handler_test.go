@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -91,14 +92,14 @@ func TestHandlePodCliqueUpdate(t *testing.T) {
 			message: denialMessage,
 		},
 	}
-	tests[0].newPCLQ.Spec.Replicas = 0
-	tests[2].newPCLQ.Spec.Replicas = 0
+	tests[0].newPCLQ.Spec.Replicas = ptr.To[int32](0)
+	tests[2].newPCLQ.Spec.Replicas = ptr.To[int32](0)
 	delete(tests[3].newPCLQ.Labels, apicommon.LabelPodCliqueScalingGroup)
-	tests[3].newPCLQ.Spec.Replicas = 0
+	tests[3].newPCLQ.Spec.Replicas = ptr.To[int32](0)
 	delete(tests[4].newPCLQ.Labels, apicommon.LabelPodCliqueScalingGroup)
-	tests[4].newPCLQ.Spec.Replicas = 0
+	tests[4].newPCLQ.Spec.Replicas = ptr.To[int32](0)
 	tests[5].newPCLQ.Labels[apicommon.LabelPodCliqueScalingGroup] = "group"
-	tests[5].newPCLQ.Spec.Replicas = 0
+	tests[5].newPCLQ.Spec.Replicas = ptr.To[int32](0)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

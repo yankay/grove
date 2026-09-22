@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -94,7 +95,7 @@ func newPCLQ(replicas int32) *grovecorev1alpha1.PodClique {
 			},
 		},
 		Spec: grovecorev1alpha1.PodCliqueSpec{
-			Replicas: replicas,
+			Replicas: ptr.To[int32](replicas),
 			RoleName: "worker",
 		},
 	}

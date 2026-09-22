@@ -295,7 +295,7 @@ func TestReconcileStatusConvergesWhenReadyPodMatchesDesiredHash(t *testing.T) {
 	pclq.UID = types.UID("pclq-uid")
 	pclq.Generation = 2
 	pclq.Spec = grovecorev1alpha1.PodCliqueSpec{
-		Replicas:     1,
+		Replicas:     ptr.To[int32](1),
 		MinAvailable: ptr.To[int32](1),
 	}
 	pclq.Status = grovecorev1alpha1.PodCliqueStatus{
@@ -333,7 +333,7 @@ func TestReconcileStatusConvergesWhenReadyPodMatchesDesiredHash(t *testing.T) {
 func TestReconcileStatusRequeuesWithoutPatchWhenStatusUnchanged(t *testing.T) {
 	pcs, pclq, templateHash := newPodCliqueHashConvergenceFixture(t)
 	pclq.Generation = 1
-	pclq.Spec = grovecorev1alpha1.PodCliqueSpec{Replicas: 1, MinAvailable: ptr.To[int32](1)}
+	pclq.Spec = grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), MinAvailable: ptr.To[int32](1)}
 	pclq.Status = grovecorev1alpha1.PodCliqueStatus{ObservedGeneration: ptr.To[int64](1)}
 	pod := createReadyOwnedPodWithHash("ready-pod", pclq, templateHash)
 
@@ -418,7 +418,7 @@ func TestEmitAllScheduledReplicasLostIfNeeded(t *testing.T) {
 			recorder := record.NewFakeRecorder(2)
 			r := &Reconciler{eventRecorder: recorder}
 			pclq := &grovecorev1alpha1.PodClique{
-				Spec:   grovecorev1alpha1.PodCliqueSpec{Replicas: tt.replicas},
+				Spec:   grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](tt.replicas)},
 				Status: grovecorev1alpha1.PodCliqueStatus{ScheduledReplicas: tt.nowScheduled},
 			}
 
@@ -461,7 +461,7 @@ func TestComputeMinAvailableBreachedConditionPartialScheduleRegression(t *testin
 			pclq: &grovecorev1alpha1.PodClique{
 				ObjectMeta: metav1.ObjectMeta{Generation: 1},
 				Spec: grovecorev1alpha1.PodCliqueSpec{
-					Replicas:     3,
+					Replicas:     ptr.To[int32](3),
 					MinAvailable: ptr.To(int32(3)),
 				},
 				Status: grovecorev1alpha1.PodCliqueStatus{
@@ -497,7 +497,7 @@ func TestComputeMinAvailableBreachedConditionPartialScheduleRegression(t *testin
 			pclq: &grovecorev1alpha1.PodClique{
 				ObjectMeta: metav1.ObjectMeta{Generation: 1},
 				Spec: grovecorev1alpha1.PodCliqueSpec{
-					Replicas:     2,
+					Replicas:     ptr.To[int32](2),
 					MinAvailable: ptr.To(int32(2)),
 				},
 				Status: grovecorev1alpha1.PodCliqueStatus{
@@ -523,7 +523,7 @@ func TestComputeMinAvailableBreachedConditionPartialScheduleRegression(t *testin
 			name: "fresh PCLQ never scheduled is not armed",
 			pclq: &grovecorev1alpha1.PodClique{
 				Spec: grovecorev1alpha1.PodCliqueSpec{
-					Replicas:     3,
+					Replicas:     ptr.To[int32](3),
 					MinAvailable: ptr.To(int32(3)),
 				},
 				Status: grovecorev1alpha1.PodCliqueStatus{
@@ -542,7 +542,7 @@ func TestComputeMinAvailableBreachedConditionPartialScheduleRegression(t *testin
 			name: "idle PodClique replicas 0 does not breach",
 			pclq: &grovecorev1alpha1.PodClique{
 				Spec: grovecorev1alpha1.PodCliqueSpec{
-					Replicas:     0,
+					Replicas:     ptr.To[int32](0),
 					MinAvailable: ptr.To(int32(1)),
 				},
 				Status: grovecorev1alpha1.PodCliqueStatus{
@@ -572,7 +572,7 @@ func TestMutateMinAvailableBreachedConditionUpdatesObservedGeneration(t *testing
 	pclq := &grovecorev1alpha1.PodClique{
 		ObjectMeta: metav1.ObjectMeta{Generation: 2},
 		Spec: grovecorev1alpha1.PodCliqueSpec{
-			Replicas:     1,
+			Replicas:     ptr.To[int32](1),
 			MinAvailable: ptr.To(int32(1)),
 		},
 		Status: grovecorev1alpha1.PodCliqueStatus{
@@ -600,7 +600,7 @@ func TestMutatePodCliqueScheduledConditionUpdatesObservedGeneration(t *testing.T
 			pclq := &grovecorev1alpha1.PodClique{
 				ObjectMeta: metav1.ObjectMeta{Generation: 1},
 				Spec: grovecorev1alpha1.PodCliqueSpec{
-					Replicas: replicas, MinAvailable: ptr.To(int32(1)),
+					Replicas: ptr.To[int32](replicas), MinAvailable: ptr.To(int32(1)),
 				},
 				Status: grovecorev1alpha1.PodCliqueStatus{ScheduledReplicas: replicas},
 			}
@@ -625,7 +625,7 @@ func TestMutatePodCliqueScheduledConditionUpdatesObservedGeneration(t *testing.T
 func TestComputePodCliqueScheduledConditionTreatsZeroReplicasAsScheduled(t *testing.T) {
 	pclq := &grovecorev1alpha1.PodClique{
 		Spec: grovecorev1alpha1.PodCliqueSpec{
-			Replicas:     0,
+			Replicas:     ptr.To[int32](0),
 			MinAvailable: ptr.To(int32(1)),
 		},
 		Status: grovecorev1alpha1.PodCliqueStatus{ScheduledReplicas: 0},
@@ -647,7 +647,7 @@ func TestReconcileStatusRequeuesOnConflict(t *testing.T) {
 	pcs, pclq, templateHash := newPodCliqueHashConvergenceFixture(t)
 	pclq.Generation = 1
 	pclq.Spec = grovecorev1alpha1.PodCliqueSpec{
-		Replicas:     1,
+		Replicas:     ptr.To[int32](1),
 		MinAvailable: ptr.To[int32](1),
 	}
 	pclq.Status = grovecorev1alpha1.PodCliqueStatus{ObservedGeneration: ptr.To[int64](1)}

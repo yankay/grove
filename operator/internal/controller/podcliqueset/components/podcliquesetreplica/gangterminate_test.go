@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -155,7 +156,7 @@ func TestCreatePCSReplicaRecoveryTaskRetainsScaleTargets(t *testing.T) {
 	}
 	pclq := &grovecorev1alpha1.PodClique{
 		ObjectMeta: metav1.ObjectMeta{Name: "pcs-0-sg-a-pc-x", Namespace: "default", Labels: replicaLabels},
-		Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: 3},
+		Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](3)},
 	}
 
 	cl := fake.NewClientBuilder().
@@ -171,7 +172,7 @@ func TestCreatePCSReplicaRecoveryTaskRetainsScaleTargets(t *testing.T) {
 	pclqList := &grovecorev1alpha1.PodCliqueList{}
 	require.NoError(t, cl.List(context.Background(), pclqList, client.InNamespace("default"), client.MatchingLabels(replicaLabels)))
 	require.Len(t, pclqList.Items, 1)
-	assert.Equal(t, int32(3), pclqList.Items[0].Spec.Replicas)
+	assert.Equal(t, int32(3), ptr.Deref(pclqList.Items[0].Spec.Replicas, 1))
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(pcs), pcs))
 	recovery, err := componentutils.GetGangRecovery(pcs, 0)
 	require.NoError(t, err)

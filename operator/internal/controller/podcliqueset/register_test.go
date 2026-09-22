@@ -62,7 +62,7 @@ func TestMapClusterTopologyToPodCliqueSets(t *testing.T) {
 					TopologyName: "selected-topology",
 					PackDomain:   grovecorev1alpha1.TopologyDomainHost,
 				},
-				Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1},
+				Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1)},
 			},
 		}
 	})

@@ -150,7 +150,7 @@ func Test_ZR12_ReconstructIdleTargetsAndMembership(t *testing.T) {
 	const pcsName = "zero-reconstruct"
 	ctx := context.Background()
 	tc, cleanup := prepareIdleWorkload(t, ctx, 3, pcsName, 1, func(pcs *grovecorev1alpha1.PodCliqueSet) {
-		idleClique(t, pcs, "guarded").Spec.Replicas = 2
+		idleClique(t, pcs, "guarded").Spec.Replicas = ptr.To[int32](2)
 	})
 	defer cleanup()
 	waitForPodCountAndReady(t, tc, 3)
@@ -188,7 +188,7 @@ func Test_ZR12_ReconstructIdleTargetsAndMembership(t *testing.T) {
 		if err := tc.Client.Get(ctx, client.ObjectKeyFromObject(guarded), current); err != nil {
 			return false, client.IgnoreNotFound(err)
 		}
-		return current.UID != guarded.UID && current.Spec.Replicas == 2, nil
+		return current.UID != guarded.UID && ptr.Deref(current.Spec.Replicas, 1) == 2, nil
 	}); err != nil {
 		t.Fatalf("explicitly deleted target did not get template-initialized: %v", err)
 	}

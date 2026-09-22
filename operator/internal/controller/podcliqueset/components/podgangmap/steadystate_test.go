@@ -576,7 +576,7 @@ func standalonePCLQ(cliqueName string, replicas int32) grovecorev1alpha1.PodCliq
 		ObjectMeta: metav1.ObjectMeta{
 			Name: apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{Name: testPCSName, Replica: 0}, cliqueName),
 		},
-		Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: replicas},
+		Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](replicas)},
 	}
 }
 

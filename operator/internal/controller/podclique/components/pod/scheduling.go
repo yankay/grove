@@ -30,6 +30,7 @@ import (
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -139,7 +140,7 @@ func (r _resource) isPCSGMinimumScheduled(ctx context.Context, ss *syncSnapshot)
 				return false, client.IgnoreNotFound(err)
 			}
 			if !metav1.IsControlledBy(pclq, pcsg) || !pclq.DeletionTimestamp.IsZero() ||
-				pclq.Spec.MinAvailable == nil || *pclq.Spec.MinAvailable <= 0 || pclq.Spec.Replicas < *pclq.Spec.MinAvailable {
+				pclq.Spec.MinAvailable == nil || *pclq.Spec.MinAvailable <= 0 || ptr.Deref(pclq.Spec.Replicas, 1) < *pclq.Spec.MinAvailable {
 				return false, nil
 			}
 			scheduled, err := r.scheduledPodsInGang(ctx, ss.pcs.Name, pclq, gangName)

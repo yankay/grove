@@ -218,7 +218,7 @@ func mutateSelector(pcsName string, pclq *grovecorev1alpha1.PodClique) error {
 // fully down (and that gang termination is now armed and will fire after TerminationDelay).
 func (r *Reconciler) emitAllScheduledReplicasLostIfNeeded(pclq *grovecorev1alpha1.PodClique, originalScheduled int32) {
 	// Scaling to zero is intentional, not a loss.
-	if pclq.Spec.Replicas != 0 && originalScheduled > 0 && pclq.Status.ScheduledReplicas == 0 {
+	if ptr.Deref(pclq.Spec.Replicas, 1) != 0 && originalScheduled > 0 && pclq.Status.ScheduledReplicas == 0 {
 		r.eventRecorder.Eventf(pclq, corev1.EventTypeWarning, internalconstants.ReasonAllScheduledReplicasLost,
 			"All scheduled pods lost (was %d). Gang termination will fire after TerminationDelay if the PodClique stays below MinAvailable; investigate node availability or capacity.",
 			originalScheduled)
@@ -233,7 +233,7 @@ func mutateMinAvailableBreachedCondition(pclq *grovecorev1alpha1.PodClique, numN
 
 // computeMinAvailableBreachedCondition calculates the MinAvailableBreached condition status based on pod availability
 func computeMinAvailableBreachedCondition(pclq *grovecorev1alpha1.PodClique, numPodsHavingAtleastOneContainerWithNonZeroExitCode, numPodsStartedButNotReady int) metav1.Condition {
-	if pclq.Spec.Replicas == 0 {
+	if ptr.Deref(pclq.Spec.Replicas, 1) == 0 {
 		return metav1.Condition{
 			Type:               constants.ConditionTypeMinAvailableBreached,
 			Status:             metav1.ConditionFalse,
@@ -327,7 +327,7 @@ func mutateLastScheduled(pclq *grovecorev1alpha1.PodClique, originalStatus *grov
 // computePodCliqueScheduledCondition calculates the PodCliqueScheduled condition based on minimum availability requirements
 func computePodCliqueScheduledCondition(pclq *grovecorev1alpha1.PodClique) metav1.Condition {
 	now := metav1.Now()
-	if pclq.Spec.Replicas == 0 {
+	if ptr.Deref(pclq.Spec.Replicas, 1) == 0 {
 		return metav1.Condition{
 			Type:               constants.ConditionTypePodCliqueScheduled,
 			Status:             metav1.ConditionTrue,

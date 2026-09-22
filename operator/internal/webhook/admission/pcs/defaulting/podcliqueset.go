@@ -89,12 +89,15 @@ func defaultPodCliqueTemplateSpecs(cliqueSpecs []*grovecorev1alpha1.PodCliqueTem
 	for _, cliqueSpec := range cliqueSpecs {
 		defaultedCliqueSpec := cliqueSpec.DeepCopy()
 		defaultedCliqueSpec.Spec.PodSpec = *defaultPodSpec(&cliqueSpec.Spec.PodSpec)
+		if defaultedCliqueSpec.Spec.Replicas == nil {
+			defaultedCliqueSpec.Spec.Replicas = ptr.To(defaultReplicas)
+		}
 		if cliqueSpec.Spec.MinAvailable == nil {
-			defaultedCliqueSpec.Spec.MinAvailable = ptr.To(max(int32(1), defaultedCliqueSpec.Spec.Replicas))
+			defaultedCliqueSpec.Spec.MinAvailable = ptr.To(max(int32(1), ptr.Deref(defaultedCliqueSpec.Spec.Replicas, 1)))
 		}
 		if cliqueSpec.Spec.ScaleConfig != nil {
 			if cliqueSpec.Spec.ScaleConfig.MinReplicas == nil {
-				defaultedCliqueSpec.Spec.ScaleConfig.MinReplicas = ptr.To(max(int32(1), defaultedCliqueSpec.Spec.Replicas))
+				defaultedCliqueSpec.Spec.ScaleConfig.MinReplicas = ptr.To(max(int32(1), ptr.Deref(defaultedCliqueSpec.Spec.Replicas, 1)))
 			}
 		}
 		// A standalone PodClique carries its own RollingUpdate. A PCSG-owned PodClique is governed by

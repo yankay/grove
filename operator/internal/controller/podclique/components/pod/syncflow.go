@@ -38,6 +38,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -302,7 +303,7 @@ func (r _resource) computePodCountDelta(ss *syncSnapshot) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return int(ss.pclq.Spec.Replicas) - int(reconciledCount), nil
+	return int(ptr.Deref(ss.pclq.Spec.Replicas, 1)) - int(reconciledCount), nil
 }
 
 // deleteExcessPods deletes `diff` number of excess Pods from this PodClique concurrently.
@@ -352,7 +353,7 @@ func (r _resource) selectExcessPodsToDelete(ss *syncSnapshot, logger logr.Logger
 		}
 		livePods = append(livePods, pod)
 	}
-	numExcessPods := len(livePods) - int(ss.pclq.Spec.Replicas)
+	numExcessPods := len(livePods) - int(ptr.Deref(ss.pclq.Spec.Replicas, 1))
 	if numExcessPods <= 0 {
 		return nil
 	}

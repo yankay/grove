@@ -39,13 +39,13 @@ func TestDefaultedIdleTemplatesValidation(t *testing.T) {
 			pcs := createTestPodCliqueSet("inference")
 			pcs.Spec.Template.Cliques[0].Spec.MinAvailable = ptr.To(int32(2))
 			if groupIdle {
-				pcs.Spec.Template.Cliques[0].Spec.Replicas = 2
+				pcs.Spec.Template.Cliques[0].Spec.Replicas = ptr.To[int32](2)
 				pcs.Spec.Template.PodCliqueScalingGroupConfigs = []grovecorev1alpha1.PodCliqueScalingGroupConfig{{
 					Name: "workers", CliqueNames: []string{pcs.Spec.Template.Cliques[0].Name},
 					Replicas: ptr.To(int32(0)), MinAvailable: ptr.To(int32(2)),
 				}}
 			} else {
-				pcs.Spec.Template.Cliques[0].Spec.Replicas = 0
+				pcs.Spec.Template.Cliques[0].Spec.Replicas = ptr.To[int32](0)
 			}
 
 			ctx := admission.NewContextWithRequest(t.Context(), admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{

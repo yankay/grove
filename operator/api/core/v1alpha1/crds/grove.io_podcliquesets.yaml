@@ -9408,7 +9408,6 @@ spec:
                               type: array
                           required:
                           - podSpec
-                          - replicas
                           - roleName
                           type: object
                           x-kubernetes-validations:

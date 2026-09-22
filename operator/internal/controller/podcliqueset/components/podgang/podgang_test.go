@@ -333,7 +333,7 @@ func TestBuildResource(t *testing.T) {
 							{
 								Name: "test-clique",
 								Spec: grovecorev1alpha1.PodCliqueSpec{
-									Replicas: 2,
+									Replicas: ptr.To[int32](2),
 								},
 							},
 						},

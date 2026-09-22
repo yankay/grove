@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -320,9 +321,9 @@ func (r _resource) buildResource(logger logr.Logger, pcs *grovecorev1alpha1.PodC
 	// Add finalizer at creation so PCLQ controller does not need a separate PATCH on first reconcile.
 	controllerutil.AddFinalizer(pclq, apiconstants.FinalizerPodClique)
 	rnr := apicommon.ResourceNameReplica{Name: pcs.Name, Replica: pcsReplica}
-	desiredReplicas := pclqTemplateSpec.Spec.Replicas
+	desiredReplicas := ptr.Deref(pclqTemplateSpec.Spec.Replicas, 1)
 	if pclqExists {
-		desiredReplicas = pclq.Spec.Replicas
+		desiredReplicas = ptr.Deref(pclq.Spec.Replicas, 1)
 	}
 	podGangName, err := resolvePodGangName(pgm, rnr, *pcs.Status.CurrentGenerationHash, pclqTemplateSpec.Name, desiredReplicas, pclq.Labels[apicommon.LabelPodGang])
 	if err != nil {
@@ -339,7 +340,7 @@ func (r _resource) buildResource(logger logr.Logger, pcs *grovecorev1alpha1.PodC
 	// set PodCliqueSpec
 	// ------------------------------------
 	pclq.Spec = *pclqTemplateSpec.Spec.DeepCopy()
-	pclq.Spec.Replicas = desiredReplicas
+	pclq.Spec.Replicas = ptr.To[int32](desiredReplicas)
 	if desiredReplicas == 0 {
 		pclq.Spec.StartsAfter = nil
 	} else {

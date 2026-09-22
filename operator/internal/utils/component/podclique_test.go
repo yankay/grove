@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -460,22 +461,22 @@ func TestGetMinAvailableBreachedPCLQInfoUsesPersistentReason(t *testing.T) {
 	pclqs := []grovecorev1alpha1.PodClique{
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "initial", Generation: 1},
-			Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: 1},
+			Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1)},
 			Status:     grovecorev1alpha1.PodCliqueStatus{Conditions: condition(constants.ConditionReasonInitialScheduling, 1)},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "legacy", Generation: 1},
-			Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: 1},
+			Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1)},
 			Status:     grovecorev1alpha1.PodCliqueStatus{Conditions: condition(constants.ConditionReasonInsufficientReadyPods, 0)},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "regressed", Generation: 1},
-			Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: 1},
+			Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1)},
 			Status:     grovecorev1alpha1.PodCliqueStatus{Conditions: condition(constants.ConditionReasonInsufficientReadyPods, 1)},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "idle", Generation: 1},
-			Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: 0},
+			Spec:       grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](0)},
 			Status:     grovecorev1alpha1.PodCliqueStatus{Conditions: condition(constants.ConditionReasonInsufficientReadyPods, 1)},
 		},
 	}

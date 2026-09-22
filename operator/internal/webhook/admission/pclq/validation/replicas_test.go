@@ -49,7 +49,7 @@ func TestMemberPositiveScalingAndLegacyUpdates(t *testing.T) {
 					owned.Finalizers = []string{"grove.io/test"}
 					setPCSGControllerOwner(owned, "group")
 					updated := owned.DeepCopy()
-					updated.Spec.Replicas = tc.newReplicas
+					updated.Spec.Replicas = ptr.To[int32](tc.newReplicas)
 					updated.Finalizers = nil
 					oldRaw, err := json.Marshal(owned)
 					require.NoError(t, err)

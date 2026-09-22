@@ -27,6 +27,7 @@ import (
 	"github.com/samber/lo"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -172,7 +173,7 @@ func GetStandalonePCLQReplicasFromPCSTemplateSpec(pcs *grovecorev1alpha1.PodCliq
 	result := make(map[string]int32)
 	for _, cliqueTemplate := range pcs.Spec.Template.Cliques {
 		if IsStandalonePCLQ(pcs, cliqueTemplate.Name) {
-			result[cliqueTemplate.Name] = cliqueTemplate.Spec.Replicas
+			result[cliqueTemplate.Name] = ptr.Deref(cliqueTemplate.Spec.Replicas, 1)
 		}
 	}
 	return result
