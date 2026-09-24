@@ -287,7 +287,11 @@ If you encounter issues not covered here:
 Currently the following schedulers support gang scheduling of `PodGang`s created by the Grove operator:
 
 - [kai-scheduler/kai-scheduler](https://github.com/kai-scheduler/kai-scheduler)
-  - Topology Aware Scheduling (TAS) requires [v0.15.2](https://github.com/kai-scheduler/kai-scheduler/releases/tag/v0.15.2)+
-  - Disable KAI stale-gang eviction with
-    `--set-string scheduler.args.default-staleness-grace-period=-1`. KAI's default eviction can terminate a
-    partially scheduled gang before Grove's controller-owned termination delay.
+  - Requires v0.17.0 or newer, including the PodGroup CRD with
+    `spec.stalenessGracePeriod`. Grove checks the served CRD at startup.
+  - Grove sets `spec.stalenessGracePeriod: "-1s"` on each PodGroup it manages.
+    This leaves gang termination to Grove, including during a partially populated wake,
+    without disabling stale-gang eviction for other workloads.
+  - Do not set `scheduler.args.default-staleness-grace-period=-1s` globally for Grove.
+    When upgrading from the prototype that required this override, remove it from the
+    Helm values and upgrade KAI's CRDs as well as its controllers.

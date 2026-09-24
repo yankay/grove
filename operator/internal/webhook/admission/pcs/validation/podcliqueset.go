@@ -355,10 +355,10 @@ func (v *pcsValidator) validatePodCliqueScalingGroupConfigs(fldPath *field.Path)
 		allErrs = append(allErrs, v.validateScalingGroupPodCliqueNames(scalingGroupConfig.Name, allPodCliqueSetCliqueNames,
 			scalingGroupConfig.CliqueNames, fldPath.Index(i).Child("cliqueNames"), fldPath.Index(i).Child("name"))...)
 
-		// validate Replicas field
+		// validate Replicas field. GREP-0677: 0 is a valid intentional idle state.
 		if scalingGroupConfig.Replicas != nil {
-			if *scalingGroupConfig.Replicas <= 0 {
-				allErrs = append(allErrs, field.Invalid(fldPath.Index(i).Child("replicas"), *scalingGroupConfig.Replicas, "must be greater than 0"))
+			if *scalingGroupConfig.Replicas < 0 {
+				allErrs = append(allErrs, field.Invalid(fldPath.Index(i).Child("replicas"), *scalingGroupConfig.Replicas, "must be greater than or equal to 0"))
 			}
 		}
 
@@ -369,9 +369,11 @@ func (v *pcsValidator) validatePodCliqueScalingGroupConfigs(fldPath *field.Path)
 			}
 		}
 
-		// validate MinAvailable <= Replicas
+		// validate MinAvailable <= Replicas. GREP-0677: an idle PCSG (replicas: 0) keeps its
+		// positive MinAvailable; the quorum applies again when it becomes active. Positive
+		// below-quorum replica counts are rejected.
 		if scalingGroupConfig.Replicas != nil && scalingGroupConfig.MinAvailable != nil {
-			if *scalingGroupConfig.MinAvailable > *scalingGroupConfig.Replicas {
+			if *scalingGroupConfig.Replicas > 0 && *scalingGroupConfig.MinAvailable > *scalingGroupConfig.Replicas {
 				allErrs = append(allErrs, field.Invalid(fldPath.Index(i).Child("minAvailable"), *scalingGroupConfig.MinAvailable, "minAvailable must not be greater than replicas"))
 			}
 		}
@@ -455,6 +457,11 @@ func (v *pcsValidator) validatePodCliqueTemplateSpec(cliqueTemplateSpec *groveco
 	allErrs = append(allErrs, metav1validation.ValidateLabels(cliqueTemplateSpec.Labels, fldPath.Child("labels"))...)
 	allErrs = append(allErrs, apivalidation.ValidateAnnotations(cliqueTemplateSpec.Annotations, fldPath.Child("annotations"))...)
 
+	// Updates check the old value separately so legacy zero-valued members do not block metadata changes.
+	if v.operation == admissionv1.Create && scalingGroupCliqueNames.Has(cliqueTemplateSpec.Name) && ptr.Deref(cliqueTemplateSpec.Spec.Replicas, 1) == 0 {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("spec", "replicas"), ptr.Deref(cliqueTemplateSpec.Spec.Replicas, 1), "must be greater than 0 for a PodClique that is part of a scaling group; set the scaling group's replicas to 0 instead"))
+	}
+
 	allErrs = append(allErrs, v.validateResourceSharingSpecs(cliqueTemplateSpec.ResourceSharing, fldPath.Child("resourceSharing"))...)
 	warnings, errs := v.validatePodCliqueSpec(cliqueTemplateSpec.Name, cliqueTemplateSpec.Spec, fldPath.Child("spec"))
 	if len(errs) != 0 {
@@ -468,7 +475,7 @@ func (v *pcsValidator) validatePodCliqueTemplateSpec(cliqueTemplateSpec *groveco
 				"rollingUpdate must not be set on a PodClique that is a member of a PodCliqueScalingGroup. Set it on the PodCliqueScalingGroup instead"))
 		}
 	} else {
-		allErrs = append(allErrs, v.validateRollingUpdateConfiguration(cliqueTemplateSpec.RollingUpdate, cliqueTemplateSpec.Spec.Replicas, fldPath.Child("rollingUpdate"))...)
+		allErrs = append(allErrs, v.validateRollingUpdateConfiguration(cliqueTemplateSpec.RollingUpdate, ptr.Deref(cliqueTemplateSpec.Spec.Replicas, 1), fldPath.Child("rollingUpdate"))...)
 	}
 
 	return warnings, allErrs
@@ -527,7 +534,7 @@ func (v *pcsValidator) validateRollingUpdateConfiguration(rollingUpdate *groveco
 	if rollingUpdate.MaxUnavailable != nil {
 		if *rollingUpdate.MaxUnavailable <= 0 {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("maxUnavailable"), *rollingUpdate.MaxUnavailable, "must be greater than 0"))
-		} else if *rollingUpdate.MaxUnavailable > replicas {
+		} else if replicas > 0 && *rollingUpdate.MaxUnavailable > replicas {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("maxUnavailable"), *rollingUpdate.MaxUnavailable, fmt.Sprintf("must not be greater than replicas (%d)", replicas)))
 		}
 	}
@@ -562,8 +569,9 @@ func (v *pcsValidator) validateScalingGroupPodCliqueNames(pcsgName string, allPc
 func (v *pcsValidator) validatePodCliqueSpec(name string, cliqueSpec grovecorev1alpha1.PodCliqueSpec, fldPath *field.Path) ([]string, field.ErrorList) {
 	allErrs := field.ErrorList{}
 
-	if cliqueSpec.Replicas <= 0 {
-		allErrs = append(allErrs, field.Invalid(fldPath.Child("replicas"), cliqueSpec.Replicas, "must be greater than 0"))
+	// GREP-0677: 0 replicas is a valid intentional idle state.
+	if ptr.Deref(cliqueSpec.Replicas, 1) < 0 {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("replicas"), ptr.Deref(cliqueSpec.Replicas, 1), "must be greater than or equal to 0"))
 	}
 
 	// Ideally this should never happen, the defaulting webhook will always set the default value for minAvailable.
@@ -574,7 +582,9 @@ func (v *pcsValidator) validatePodCliqueSpec(name string, cliqueSpec grovecorev1
 		if *cliqueSpec.MinAvailable <= 0 {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("minAvailable"), *cliqueSpec.MinAvailable, "must be greater than 0"))
 		}
-		if *cliqueSpec.MinAvailable > cliqueSpec.Replicas {
+		// GREP-0677: an idle PodClique (replicas: 0) keeps its positive MinAvailable; the quorum
+		// applies again when it becomes active. Positive below-quorum replica counts are rejected.
+		if ptr.Deref(cliqueSpec.Replicas, 1) > 0 && *cliqueSpec.MinAvailable > ptr.Deref(cliqueSpec.Replicas, 1) {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("minAvailable"), *cliqueSpec.MinAvailable, "minAvailable must not be greater than replicas"))
 		}
 	}
@@ -593,7 +603,7 @@ func (v *pcsValidator) validatePodCliqueSpec(name string, cliqueSpec grovecorev1
 
 	if cliqueSpec.ScaleConfig != nil {
 		allErrs = append(allErrs, validateScaleConfig(cliqueSpec.ScaleConfig, *cliqueSpec.MinAvailable, fldPath.Child("autoScalingConfig"))...)
-		if cliqueSpec.ScaleConfig.MaxReplicas < cliqueSpec.Replicas {
+		if cliqueSpec.ScaleConfig.MaxReplicas < ptr.Deref(cliqueSpec.Replicas, 1) {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("autoScalingConfig", "maxReplicas"), cliqueSpec.ScaleConfig.MaxReplicas, "must be greater than or equal to replicas"))
 		}
 	}
@@ -1022,6 +1032,7 @@ func (v *pcsValidator) validatePodCliqueUpdate(oldCliques []*grovecorev1alpha1.P
 		oldCliqueIndexMap[clique.Name] = lo.Tuple2[int, *grovecorev1alpha1.PodCliqueTemplateSpec]{A: i, B: clique}
 	})
 	orderIsEnforced := requiresOrderValidation(v.pcs.Spec.Template.StartupType)
+	_, scalingGroupCliqueNames := componentutils.GetExpectedPCLQNamesGroupByOwner(v.pcs)
 	// Validate each new clique against its corresponding old clique
 	for newCliqueIndex, newClique := range newCliques {
 		oldIndexCliqueTuple, exists := oldCliqueIndexMap[newClique.Name]
@@ -1037,6 +1048,11 @@ func (v *pcsValidator) validatePodCliqueUpdate(oldCliques []*grovecorev1alpha1.P
 			allErrs = append(allErrs, field.Invalid(fldPath, newClique.Name,
 				fmt.Sprintf("clique order cannot be changed when StartupType is InOrder or Explicit. Expected '%s' at position %d, got '%s'",
 					oldIndexCliqueTuple.B.Name, newCliqueIndex, newClique.Name)))
+		}
+
+		// Preserve unchanged legacy zero values, but do not allow members to become independently idle.
+		if scalingGroupCliqueNames.Has(newClique.Name) && ptr.Deref(newClique.Spec.Replicas, 1) == 0 {
+			allErrs = append(allErrs, apivalidation.ValidateImmutableField(ptr.Deref(newClique.Spec.Replicas, 1), ptr.Deref(oldIndexCliqueTuple.B.Spec.Replicas, 1), fldPath.Index(newCliqueIndex).Child("spec", "replicas"))...)
 		}
 
 		// Validate immutable PodClique fields

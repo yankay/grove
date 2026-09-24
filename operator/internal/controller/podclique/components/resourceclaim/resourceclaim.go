@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -105,7 +106,7 @@ func (r _resource) Sync(ctx context.Context, _ logr.Logger, pclq *grovecorev1alp
 	resourceSharers := resourceclaim.ResourceSharersFromPCLQ(pclqTemplateSpec.ResourceSharing)
 
 	labels := pclqResourceClaimLabels(pclq.ObjectMeta)
-	currentReplicas := int(pclq.Spec.Replicas)
+	currentReplicas := int(ptr.Deref(pclq.Spec.Replicas, 1))
 
 	if err := r.ensureAllReplicasRCs(ctx, pclq, pcs, resourceSharers, labels); err != nil {
 		return err

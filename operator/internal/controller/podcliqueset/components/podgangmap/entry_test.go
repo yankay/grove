@@ -15,10 +15,12 @@
 package podgangmap
 
 import (
+	"math"
 	"strconv"
 	"testing"
 
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 
 	"github.com/stretchr/testify/assert"
@@ -98,7 +100,7 @@ func TestIsPodGangEntryEmpty(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			actual := isPodGangEntryEmpty(tt.entry)
+			actual := componentutils.IsPodGangEntryEmpty(tt.entry)
 			assert.Equal(t, tt.expected, actual)
 		})
 	}
@@ -213,4 +215,68 @@ func entriesWithGenerationHashes(hashes []string) []grovecorev1alpha1.PodGangEnt
 		entries = append(entries, testutils.NewPodGangEntryBuilder(h, strconv.Itoa(i)).Build())
 	}
 	return entries
+}
+
+func TestFindAnchorEntryForStandalonePCLQ(t *testing.T) {
+	const hash = "gen-1"
+	anchor0 := testutils.NewPodGangEntryBuilder(hash, "100").
+		WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
+		WithAnchorIndex(0).
+		WithPodCliques(map[string]int32{"router": 1, "decode": 2}).
+		Build()
+	tail := testutils.NewPodGangEntryBuilder(hash, "101").
+		WithRole(grovecorev1alpha1.PodGangEntryRoleTail).
+		WithPCSGReplicaIndices(map[string][]int32{"prefill": {2}}).
+		Build()
+	oldGenAnchor := testutils.NewPodGangEntryBuilder("old-gen", "50").
+		WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
+		WithAnchorIndex(0).
+		WithPodCliques(map[string]int32{"legacy": 1}).
+		Build()
+	entries := []grovecorev1alpha1.PodGangEntry{anchor0, tail, oldGenAnchor}
+
+	got, err := componentutils.FindPodGangEntryForStandalonePCLQ(entries, hash, "router")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "100", got.Epoch)
+
+	got, err = componentutils.FindPodGangEntryForStandalonePCLQ(entries, hash, "missing")
+	require.NoError(t, err)
+	assert.Nil(t, got, "unknown clique has no owning anchor")
+	got, err = componentutils.FindPodGangEntryForStandalonePCLQ(entries, hash, "legacy")
+	require.NoError(t, err)
+	assert.Nil(t, got, "old-generation anchor is not a match")
+}
+
+func TestEpochAllocator(t *testing.T) {
+	const hash = "gen-1"
+	e100 := testutils.NewPodGangEntryBuilder(hash, "100").Build()
+	e250 := testutils.NewPodGangEntryBuilder(hash, "250").Build()
+	entries := []grovecorev1alpha1.PodGangEntry{e100, e250}
+
+	t.Run("allocates monotonically after existing epochs", func(t *testing.T) {
+		allocator, err := newEpochAllocator(entries, 200)
+		require.NoError(t, err)
+		assert.Equal(t, "251", allocator.allocate())
+		assert.Equal(t, "252", allocator.allocate())
+	})
+	t.Run("uses a later clock value", func(t *testing.T) {
+		allocator, err := newEpochAllocator(entries, 999)
+		require.NoError(t, err)
+		assert.Equal(t, "999", allocator.allocate())
+	})
+	t.Run("uses the clock value without entries", func(t *testing.T) {
+		allocator, err := newEpochAllocator(nil, 42)
+		require.NoError(t, err)
+		assert.Equal(t, "42", allocator.allocate())
+	})
+	t.Run("rejects invalid existing epoch", func(t *testing.T) {
+		_, err := newEpochAllocator(entriesWithEpochs([]string{"invalid"}), 42)
+		require.Error(t, err)
+	})
+
+	t.Run("rejects exhausted epoch space", func(t *testing.T) {
+		_, err := newEpochAllocator(entriesWithEpochs([]string{strconv.FormatInt(math.MaxInt64, 10)}), 42)
+		require.Error(t, err)
+	})
 }

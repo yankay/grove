@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -173,7 +174,7 @@ func TestSyncPreservesForeignLabelsAndSpec(t *testing.T) {
 
 	pclq := getPCLQ(t, cl, standaloneCliqueName(0))
 	assert.Equal(t, "bar", pclq.Labels["example.com/foo"], "foreign PodClique label must be preserved")
-	assert.Equal(t, int32(1), pclq.Spec.Replicas, "PodClique spec must be untouched")
+	assert.Equal(t, int32(1), ptr.Deref(pclq.Spec.Replicas, 1), "PodClique spec must be untouched")
 
 	for _, pod := range listPodsOfPCLQ(t, cl, standaloneCliqueName(0)) {
 		assert.Equal(t, "bar", pod.Labels["example.com/foo"], "foreign Pod label must be preserved")

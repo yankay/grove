@@ -358,9 +358,7 @@ func Test_isMarkedForDeletion(t *testing.T) {
 
 // TestPodGangMapPredicate verifies the PodGangMap watch predicate. It must fire on Create so a
 // reconstructed PodGangMap that already carries a multi-anchor distribution is processed, and on an
-// Update that moves a standalone PodClique between entries or changes its count. It must not fire
-// when only PodCliqueScalingGroup replica indices change, which the PodClique controller does not
-// consume.
+// Update that changes placement, including the PCSG membership read by scheduling gate removal.
 func TestPodGangMapPredicate(t *testing.T) {
 	const ns, pcsName, hash = "default", "pcs", "gen"
 	pred, ok := podGangMapPredicate().(predicate.Funcs)
@@ -418,7 +416,7 @@ func TestPodGangMapPredicate(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "only PodCliqueScalingGroup indices change does not fire",
+			name: "PodCliqueScalingGroup membership change fires",
 			old: pgmWith(testutils.NewPodGangEntryBuilder(hash, "100").
 				WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(0).
 				WithPodCliques(map[string]int32{"frontend": 6}).
@@ -427,7 +425,7 @@ func TestPodGangMapPredicate(t *testing.T) {
 				WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(0).
 				WithPodCliques(map[string]int32{"frontend": 6}).
 				WithPCSGReplicaIndices(map[string][]int32{"sga": {0, 1}}).Build()),
-			want: false,
+			want: true,
 		},
 	}
 	for _, tt := range tests {

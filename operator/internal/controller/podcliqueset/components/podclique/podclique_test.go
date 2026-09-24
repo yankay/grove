@@ -18,12 +18,15 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
+	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	apiconstants "github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	groveclientscheme "github.com/ai-dynamo/grove/operator/internal/client"
 	"github.com/ai-dynamo/grove/operator/internal/constants"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
+	podgangmapcomponent "github.com/ai-dynamo/grove/operator/internal/controller/podcliqueset/components/podgangmap"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/mnnvl"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
@@ -35,8 +38,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/tools/record"
+	clocktesting "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -45,6 +50,52 @@ const (
 	testPCSName      = "coyote"
 	testPCSNamespace = "cobalt-ns"
 )
+
+func TestRecreateMissingIdleStandaloneAfterMembershipRemoval(t *testing.T) {
+	ctx := context.Background()
+	pcs := testutils.NewPodCliqueSetBuilder("pcs", "default", "pcs-uid").
+		WithReplicas(1).WithStandaloneCliqueReplicas("router", 1).
+		WithStandaloneCliqueReplicas("worker", 1).
+		WithPodCliqueSetGenerationHash(ptr.To("generation")).
+		WithCliqueStartupType(ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder)).Build()
+	cl := testutils.NewTestClientBuilder().WithObjects(pcs).Build()
+	pgmOperator := podgangmapcomponent.New(cl, cl.Scheme(), clocktesting.NewFakeClock(time.Unix(0, 100)))
+	r := _resource{client: cl, scheme: cl.Scheme(), eventRecorder: record.NewFakeRecorder(20)}
+	pgm := &grovecorev1alpha1.PodGangMap{}
+	pgmKey := client.ObjectKey{Name: "pcs-0", Namespace: pcs.Namespace}
+	require.NoError(t, pgmOperator.Sync(ctx, logr.Discard(), pcs))
+	require.NoError(t, cl.Get(ctx, pgmKey, pgm))
+	routerKey := client.ObjectKey{Name: "pcs-0-router", Namespace: pcs.Namespace}
+	workerKey := client.ObjectKey{Name: "pcs-0-worker", Namespace: pcs.Namespace}
+	require.NoError(t, r.doCreateOrUpdate(ctx, logr.Discard(), pcs, 0, pgm, routerKey))
+	require.NoError(t, r.doCreateOrUpdate(ctx, logr.Discard(), pcs, 0, pgm, workerKey))
+	router := &grovecorev1alpha1.PodClique{}
+	require.NoError(t, cl.Get(ctx, routerKey, router))
+	worker := &grovecorev1alpha1.PodClique{}
+	require.NoError(t, cl.Get(ctx, workerKey, worker))
+	worker.Spec.Replicas = ptr.To[int32](0)
+	require.NoError(t, cl.Update(ctx, worker))
+	require.NoError(t, pgmOperator.Sync(ctx, logr.Discard(), pcs))
+	require.NoError(t, cl.Get(ctx, pgmKey, pgm))
+	require.NotContains(t, pgm.Spec.Entries[0].PodCliques, "worker")
+	epoch := pgm.Spec.Entries[0].Epoch
+	// Explicit target deletion is not recovery: recreation initializes from the
+	// template. Simulate finalizer release after its already-idle Pods are gone.
+	worker.Finalizers = nil
+	require.NoError(t, cl.Update(ctx, worker))
+	require.NoError(t, cl.Delete(ctx, worker))
+	require.NoError(t, pgmOperator.Sync(ctx, logr.Discard(), pcs))
+	require.NoError(t, cl.Get(ctx, pgmKey, pgm))
+	require.Equal(t, epoch, pgm.Spec.Entries[0].Epoch)
+	require.EqualValues(t, 1, pgm.Spec.Entries[0].PodCliques["worker"])
+	require.NoError(t, r.doCreateOrUpdate(ctx, logr.Discard(), pcs, 0, pgm, workerKey))
+	require.NoError(t, cl.Get(ctx, workerKey, worker))
+	require.EqualValues(t, 1, ptr.Deref(worker.Spec.Replicas, 1))
+	require.Equal(t, apicommon.GenerateAnchorPodGangName(apicommon.ResourceNameReplica{Name: pcs.Name, Replica: 0}, epoch), worker.Labels[apicommon.LabelPodGang])
+	actualRouter := &grovecorev1alpha1.PodClique{}
+	require.NoError(t, cl.Get(ctx, routerKey, actualRouter))
+	require.Equal(t, router, actualRouter)
+}
 
 func TestGetExistingResourceNames(t *testing.T) {
 	testCases := []struct {
@@ -428,6 +479,7 @@ func TestBuildResource_MNNVLInjection(t *testing.T) {
 			pcsBuilder := testutils.NewPodCliqueSetBuilder(testPCSName, testPCSNamespace, uuid.NewUUID()).
 				WithReplicas(1).
 				WithCliqueStartupType(ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder)).
+				WithPodCliqueSetGenerationHash(ptr.To("hash")).
 				WithAnnotations(tc.pcsAnnotations)
 
 			// Create PodCliqueTemplateSpec with containers and optional annotations
@@ -460,9 +512,12 @@ func TestBuildResource_MNNVLInjection(t *testing.T) {
 			// name from the anchor entry's epoch.
 			pgm := testutils.NewPodGangMapBuilder(testPCSName, testPCSNamespace, uuid.NewUUID(), pcsReplica).WithEntries(
 				testutils.NewPodGangEntryBuilder("hash", "1000").
-					WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(0).Build(),
+					WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
+					WithAnchorIndex(0).
+					WithPodCliques(map[string]int32{pclqTemplateName: 1}).
+					Build(),
 			).Build()
-			err := operator.buildResource(logr.Discard(), pcs, pcsReplica, false, pgm, pclq)
+			err := operator.buildResource(logr.Discard(), pcs, pcsReplica, pgm, pclq)
 			require.NoError(t, err)
 
 			// Verify pod-level claims
@@ -498,6 +553,7 @@ func TestBuildResource_StripsTopologyAnnotation(t *testing.T) {
 	pcs := testutils.NewPodCliqueSetBuilder(testPCSName, testPCSNamespace, uuid.NewUUID()).
 		WithReplicas(1).
 		WithCliqueStartupType(ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder)).
+		WithPodCliqueSetGenerationHash(ptr.To("hash")).
 		WithPodCliqueTemplateSpec(
 			testutils.NewPodCliqueTemplateSpecBuilder("worker").
 				WithAnnotations(map[string]string{
@@ -520,14 +576,72 @@ func TestBuildResource_StripsTopologyAnnotation(t *testing.T) {
 	// from the anchor entry's epoch.
 	pgm := testutils.NewPodGangMapBuilder(testPCSName, testPCSNamespace, uuid.NewUUID(), 0).WithEntries(
 		testutils.NewPodGangEntryBuilder("hash", "1000").
-			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(0).Build(),
+			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
+			WithAnchorIndex(0).
+			WithPodCliques(map[string]int32{"worker": 1}).
+			Build(),
 	).Build()
-	err := operator.buildResource(logr.Discard(), pcs, 0, false, pgm, pclq)
+	err := operator.buildResource(logr.Discard(), pcs, 0, pgm, pclq)
 	require.NoError(t, err)
 	require.NotNil(t, pclq.Annotations)
 	assert.Equal(t, "yes", pclq.Annotations["example.com/keep"])
 	_, hasTopologyAnnotation := pclq.Annotations[apiconstants.AnnotationTopologyName]
 	assert.False(t, hasTopologyAnnotation)
+}
+
+func TestResolvePodGangName(t *testing.T) {
+	rnr := apicommon.ResourceNameReplica{Name: testPCSName, Replica: 0}
+	pgm := testutils.NewPodGangMapBuilder(testPCSName, testPCSNamespace, "uid", 0).WithEntries(
+		testutils.NewPodGangEntryBuilder("hash", "1000").
+			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
+			WithAnchorIndex(0).
+			Build(),
+		testutils.NewPodGangEntryBuilder("hash", "1001").
+			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
+			WithAnchorIndex(1).
+			WithPodCliques(map[string]int32{"worker": 1}).
+			Build(),
+	).Build()
+
+	t.Run("active clique uses its actual anchor", func(t *testing.T) {
+		actual, err := resolvePodGangName(pgm, rnr, "hash", "worker", 1, "")
+		require.NoError(t, err)
+		assert.Equal(t, apicommon.GenerateAnchorPodGangName(rnr, "1001"), actual)
+	})
+
+	t.Run("idle existing clique retains its label", func(t *testing.T) {
+		actual, err := resolvePodGangName(pgm, rnr, "hash", "worker", 0, "old-podgang")
+		require.NoError(t, err)
+		assert.Equal(t, "old-podgang", actual)
+	})
+
+	t.Run("new idle clique uses the retained base anchor", func(t *testing.T) {
+		actual, err := resolvePodGangName(pgm, rnr, "hash", "idle", 0, "")
+		require.NoError(t, err)
+		assert.Equal(t, apicommon.GenerateAnchorPodGangName(rnr, "1000"), actual)
+	})
+}
+
+func TestIdentifyFullyQualifiedStartupDependencyNames(t *testing.T) {
+	startupType := grovecorev1alpha1.CliqueStartupTypeInOrder
+	pcs := testutils.NewPodCliqueSetBuilder(testPCSName, testPCSNamespace, "uid").
+		WithCliqueStartupType(&startupType).
+		WithPodCliqueParameters("router", 1, nil).
+		WithPodCliqueParameters("idle", 0, nil).
+		WithPodCliqueParameters("worker", 1, nil).
+		Build()
+	pclq := &grovecorev1alpha1.PodClique{ObjectMeta: metav1.ObjectMeta{Name: "coyote-0-worker"}}
+	active := sets.New("coyote-0-router", "coyote-0-worker")
+
+	actual, err := identifyFullyQualifiedStartupDependencyNames(pcs, pclq, 0, 2, active)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"coyote-0-router"}, actual)
+
+	startupType = grovecorev1alpha1.CliqueStartupTypeExplicit
+	pclq.Spec.StartsAfter = []string{"router", "idle"}
+	actual, err = identifyFullyQualifiedStartupDependencyNames(pcs, pclq, 0, 2, active)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"coyote-0-router"}, actual)
 }
 
 // triageContainersByMNNVLClaim separates containers into those with MNNVL claim and those without.

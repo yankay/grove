@@ -82,21 +82,22 @@ func defaultHeadlessServiceConfig(headlessServiceConfig *grovecorev1alpha1.Headl
 	return headlessServiceConfig
 }
 
-// defaultPodCliqueTemplateSpecs applies defaults to each PodClique template including replicas, minAvailable, and autoscaling configuration.
+// defaultPodCliqueTemplateSpecs preserves explicit zero replicas after schema defaulting.
+// Idle templates still need a positive quorum and an active autoscaling floor.
 func defaultPodCliqueTemplateSpecs(cliqueSpecs []*grovecorev1alpha1.PodCliqueTemplateSpec, updateStrategy grovecorev1alpha1.UpdateStrategyType, pcsgOwnedCliqueNames sets.Set[string]) []*grovecorev1alpha1.PodCliqueTemplateSpec {
 	defaultedCliqueSpecs := make([]*grovecorev1alpha1.PodCliqueTemplateSpec, 0, len(cliqueSpecs))
 	for _, cliqueSpec := range cliqueSpecs {
 		defaultedCliqueSpec := cliqueSpec.DeepCopy()
 		defaultedCliqueSpec.Spec.PodSpec = *defaultPodSpec(&cliqueSpec.Spec.PodSpec)
-		if defaultedCliqueSpec.Spec.Replicas == 0 {
-			defaultedCliqueSpec.Spec.Replicas = defaultReplicas
+		if defaultedCliqueSpec.Spec.Replicas == nil {
+			defaultedCliqueSpec.Spec.Replicas = ptr.To(defaultReplicas)
 		}
 		if cliqueSpec.Spec.MinAvailable == nil {
-			defaultedCliqueSpec.Spec.MinAvailable = ptr.To(defaultedCliqueSpec.Spec.Replicas)
+			defaultedCliqueSpec.Spec.MinAvailable = ptr.To(max(int32(1), ptr.Deref(defaultedCliqueSpec.Spec.Replicas, 1)))
 		}
 		if cliqueSpec.Spec.ScaleConfig != nil {
 			if cliqueSpec.Spec.ScaleConfig.MinReplicas == nil {
-				defaultedCliqueSpec.Spec.ScaleConfig.MinReplicas = ptr.To(defaultedCliqueSpec.Spec.Replicas)
+				defaultedCliqueSpec.Spec.ScaleConfig.MinReplicas = ptr.To(max(int32(1), ptr.Deref(defaultedCliqueSpec.Spec.Replicas, 1)))
 			}
 		}
 		// A standalone PodClique carries its own RollingUpdate. A PCSG-owned PodClique is governed by

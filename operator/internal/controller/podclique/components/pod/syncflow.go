@@ -38,6 +38,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -302,7 +303,7 @@ func (r _resource) computePodCountDelta(ss *syncSnapshot) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return int(ss.pclq.Spec.Replicas) - int(reconciledCount), nil
+	return int(ptr.Deref(ss.pclq.Spec.Replicas, 1)) - int(reconciledCount), nil
 }
 
 // deleteExcessPods deletes `diff` number of excess Pods from this PodClique concurrently.
@@ -352,7 +353,7 @@ func (r _resource) selectExcessPodsToDelete(ss *syncSnapshot, logger logr.Logger
 		}
 		livePods = append(livePods, pod)
 	}
-	numExcessPods := len(livePods) - int(ss.pclq.Spec.Replicas)
+	numExcessPods := len(livePods) - int(ptr.Deref(ss.pclq.Spec.Replicas, 1))
 	if numExcessPods <= 0 {
 		return nil
 	}
@@ -388,18 +389,14 @@ func (r _resource) checkAndRemovePodSchedulingGates(ctx context.Context, logger 
 		return skippedScheduleGatedPods, nil
 	}
 
-	podGangByName, err := r.fetchPodGangsForGatedPods(ctx, gatedPods, ss.pclq.Namespace)
-	if err != nil {
-		return nil, err
-	}
-	dependencySatisfiedByEpoch, err := r.resolveDependencySatisfiedByEpoch(ctx, ss)
+	scheduling, err := r.prepareSchedulingGateSnapshot(ctx, ss, gatedPods)
 	if err != nil {
 		return nil, err
 	}
 
 	tasks := make([]utils.Task, 0, len(gatedPods))
 	for i, pod := range gatedPods {
-		if !canRemoveSchedulingGate(logger, pod, ss.pclq.Name, podGangByName, dependencySatisfiedByEpoch) {
+		if !canRemoveSchedulingGate(logger, pod, ss.pclq.Name, scheduling) {
 			skippedScheduleGatedPods = append(skippedScheduleGatedPods, pod.Name)
 			continue
 		}
@@ -473,6 +470,13 @@ func (r _resource) fetchPodGangsForGatedPods(ctx context.Context, gatedPods []*c
 // satisfied. Each distinct dependency epoch is resolved with a single List, memoized across entries.
 func (r _resource) resolveDependencySatisfiedByEpoch(ctx context.Context, ss *syncSnapshot) (map[string]bool, error) {
 	epochScheduled := make(map[string]bool)
+	for _, entry := range ss.pgm.Spec.Entries {
+		// Idle slots have no materialized PodGang to schedule. Keep their epoch references intact
+		// so a later wake resumes the dependency without rewriting active entries.
+		if componentutils.IsPodGangEntryEmpty(entry) {
+			epochScheduled[entry.Epoch] = true
+		}
+	}
 	satisfiedByEpoch := make(map[string]bool, len(ss.pgm.Spec.Entries))
 	for _, entry := range ss.pgm.Spec.Entries {
 		satisfied := true
@@ -497,11 +501,10 @@ func (r _resource) resolveDependencySatisfiedByEpoch(ctx context.Context, ss *sy
 }
 
 // canRemoveSchedulingGate reports whether pod's Grove PodGang gate can be lifted. Its PodGang must
-// exist, record the pod in its PodReferences, and the dependencies of its PodGang's epoch must be
-// satisfied. It reads only prefetched maps and makes no API calls. A PodGang epoch absent from
-// dependencySatisfiedByEpoch (a transient PodGangMap and PodGang divergence) resolves to false, so
-// the pod is skipped and the reconcile requeues.
-func canRemoveSchedulingGate(logger logr.Logger, pod *corev1.Pod, pclqName string, podGangByName map[string]*groveschedulerv1alpha1.PodGang, dependencySatisfiedByEpoch map[string]bool) bool {
+// exist, record the pod in its PodReferences, and have its native policy synchronized. Both the
+// historical epoch dependencies and the live PCSG minimum must be satisfied. Missing observations
+// keep the gate in place until reconciliation catches up. No API calls are made here.
+func canRemoveSchedulingGate(logger logr.Logger, pod *corev1.Pod, pclqName string, ss *schedulingGateSnapshot) bool {
 	podObjectKey := client.ObjectKeyFromObject(pod)
 	podGangName, ok := pod.Labels[apicommon.LabelPodGang]
 	if !ok {
@@ -509,16 +512,22 @@ func canRemoveSchedulingGate(logger logr.Logger, pod *corev1.Pod, pclqName strin
 		return false
 	}
 
-	podGang := podGangByName[podGangName]
+	if !ss.pcsgMinimumScheduled || !ss.backendSyncedByPodGang[podGangName] {
+		return false
+	}
+	podGang := ss.podGangByName[podGangName]
 	if podGang == nil {
 		logger.Info("PodGang not found yet, skipping gate removal", "podObjectKey", podObjectKey, "podGangName", podGangName)
+		return false
+	}
+	if !podGang.DeletionTimestamp.IsZero() {
 		return false
 	}
 	if !isPodInPodReferences(podGang, pclqName, pod.Name) {
 		logger.Info("Pod not yet recorded in PodGang PodReferences, skipping gate removal", "podObjectKey", podObjectKey, "podGangName", podGangName)
 		return false
 	}
-	if !dependencySatisfiedByEpoch[podGang.Labels[apicommon.LabelEpoch]] {
+	if !ss.dependencySatisfiedByEpoch[podGang.Labels[apicommon.LabelEpoch]] {
 		logger.Info("Pod's PodGang epoch dependencies not yet scheduled, skipping gate removal", "podObjectKey", podObjectKey, "podGangName", podGangName)
 		return false
 	}
@@ -582,7 +591,7 @@ func (r _resource) createPods(ctx context.Context, logger logr.Logger, ss *syncS
 		// Get the available Pod host name index. This ensures that we fill the holes in the indices if there are any when creating
 		// new pods.
 		podHostNameIndex := availableIndices[i]
-		createTasks = append(createTasks, r.createPodCreationTask(logger, ss.pcs, ss.pclq, ss.pcsgReplicaPodGangName, expectationsKey, i, podHostNameIndex))
+		createTasks = append(createTasks, r.createPodCreationTask(logger, ss, ss.pcsgReplicaPodGangName, expectationsKey, i, podHostNameIndex))
 	}
 	runResult := utils.RunConcurrentlyWithSlowStart(ctx, logger, 1, createTasks)
 	if runResult.HasErrors() {

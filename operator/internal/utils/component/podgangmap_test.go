@@ -27,6 +27,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -251,7 +252,6 @@ func TestPodGangNameForPCSGReplica(t *testing.T) {
 		{"anchor replica resolves to the anchor PodGang name", 0, apicommon.GenerateAnchorPodGangName(pcsRnr, anchorEpoch)},
 		{"tail replica resolves to a non-anchor PodGang name", 2, apicommon.GenerateNonAnchorPodGangName(pcsRnr, tailEpoch, pcsgName, 2)},
 		{"placed scale-out replica resolves to a non-anchor PodGang name", 3, apicommon.GenerateNonAnchorPodGangName(pcsRnr, scaleOutEpoch, pcsgName, 3)},
-		{"not-yet-placed scale-out replica falls back to the ScaleOut entry", 4, apicommon.GenerateNonAnchorPodGangName(pcsRnr, scaleOutEpoch, pcsgName, 4)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -260,6 +260,12 @@ func TestPodGangNameForPCSGReplica(t *testing.T) {
 			assert.Equal(t, test.expectedName, actual)
 		})
 	}
+
+	t.Run("unplaced replica waits even when a ScaleOut slot exists", func(t *testing.T) {
+		name, err := PodGangNameForPCSGReplica(pgm, pcsRnr, pcsgName, 4)
+		require.Error(t, err)
+		assert.Empty(t, name)
+	})
 
 	t.Run("errors when no owning entry and no ScaleOut entry exist", func(t *testing.T) {
 		anchorOnly := testutils.NewPodGangMapBuilder(pcsName, namespace, "uid", 0).WithEntries(
@@ -286,4 +292,121 @@ func TestIndexPodGangEntriesByEpoch(t *testing.T) {
 		actual := IndexPodGangEntriesByEpoch(nil)
 		assert.Empty(t, actual)
 	})
+}
+
+func TestPodGangNameForStandalonePCLQ(t *testing.T) {
+	rnr := apicommon.ResourceNameReplica{Name: "pcs", Replica: 0}
+	pgm := testutils.NewPodGangMapBuilder("pcs", "default", "uid", 0).WithEntries(
+		testutils.NewPodGangEntryBuilder("hash", "1000").
+			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
+			WithAnchorIndex(0).
+			WithPodCliques(map[string]int32{"router": 1}).
+			Build(),
+		testutils.NewPodGangEntryBuilder("hash", "1001").
+			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
+			WithAnchorIndex(1).
+			WithPodCliques(map[string]int32{"worker": 2}).
+			Build(),
+	).Build()
+
+	actual, err := PodGangNameForStandalonePCLQ(pgm, rnr, "hash", "worker")
+	require.NoError(t, err)
+	assert.Equal(t, apicommon.GenerateAnchorPodGangName(rnr, "1001"), actual)
+
+	_, err = PodGangNameForStandalonePCLQ(pgm, rnr, "hash", "idle")
+	require.Error(t, err)
+
+	t.Run("rejects duplicate membership", func(t *testing.T) {
+		duplicate := pgm.DeepCopy()
+		duplicate.Spec.Entries[0].PodCliques["worker"] = 1
+		_, err := PodGangNameForStandalonePCLQ(duplicate, rnr, "hash", "worker")
+		require.Error(t, err)
+	})
+
+	t.Run("ignores membership from another generation", func(t *testing.T) {
+		otherGeneration := pgm.DeepCopy()
+		otherGeneration.Spec.Entries[1].PodCliqueSetGenerationHash = "old"
+		_, err := PodGangNameForStandalonePCLQ(otherGeneration, rnr, "hash", "worker")
+		require.Error(t, err)
+	})
+}
+
+func TestActivePodCliqueNamesForPodGang(t *testing.T) {
+	const (
+		pcsName   = "pcs"
+		namespace = "default"
+		pcsgName  = "sg"
+	)
+	rnr := apicommon.ResourceNameReplica{Name: pcsName, Replica: 0}
+	pcs := testutils.NewPodCliqueSetBuilder(pcsName, namespace, "uid").
+		WithStandaloneClique("router").
+		WithStandaloneCliqueReplicas("idle", 0).
+		WithScalingGroupConfig(pcsgName, []string{"prefill", "decode"}, 2, 1).
+		Build()
+	pgm := testutils.NewPodGangMapBuilder(pcsName, namespace, "uid", 0).WithEntries(
+		testutils.NewPodGangEntryBuilder("hash", "1000").
+			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
+			WithAnchorIndex(0).
+			WithPodCliques(map[string]int32{"router": 1, "idle": 0}).
+			WithPCSGReplicaIndices(map[string][]int32{pcsgName: {0}}).
+			Build(),
+		testutils.NewPodGangEntryBuilder("hash", "1001").
+			WithRole(grovecorev1alpha1.PodGangEntryRoleTail).
+			WithPCSGReplicaIndices(map[string][]int32{pcsgName: {1}}).
+			Build(),
+	).Build()
+
+	t.Run("anchor includes positive standalone and colocated PCSG members", func(t *testing.T) {
+		actual, err := ActivePodCliqueNamesForPodGang(pcs, pgm, rnr, apicommon.GenerateAnchorPodGangName(rnr, "1000"))
+		require.NoError(t, err)
+		assert.Equal(t, sets.New(
+			"pcs-0-router",
+			"pcs-0-sg-0-prefill",
+			"pcs-0-sg-0-decode",
+		), actual)
+	})
+
+	t.Run("non-anchor includes only the materialized PCSG replica", func(t *testing.T) {
+		actual, err := ActivePodCliqueNamesForPodGang(pcs, pgm, rnr, apicommon.GenerateNonAnchorPodGangName(rnr, "1001", pcsgName, 1))
+		require.NoError(t, err)
+		assert.Equal(t, sets.New(
+			"pcs-0-sg-1-prefill",
+			"pcs-0-sg-1-decode",
+		), actual)
+	})
+
+	t.Run("unknown PodGang is an error", func(t *testing.T) {
+		_, err := ActivePodCliqueNamesForPodGang(pcs, pgm, rnr, "missing")
+		require.Error(t, err)
+	})
+
+	t.Run("unknown standalone membership is an error", func(t *testing.T) {
+		entry := pgm.Spec.Entries[0].DeepCopy()
+		entry.PodCliques["unknown"] = 1
+		_, err := ActivePodCliqueNamesForEntry(pcs, rnr, entry)
+		require.Error(t, err)
+	})
+
+	t.Run("unknown scaling group membership is an error", func(t *testing.T) {
+		entry := pgm.Spec.Entries[0].DeepCopy()
+		entry.PCSGReplicaIndices["unknown"] = []int32{0}
+		_, err := ActivePodCliqueNamesForEntry(pcs, rnr, entry)
+		require.Error(t, err)
+	})
+}
+
+func TestFindPodGangEntryForPCSGReplica(t *testing.T) {
+	entries := []grovecorev1alpha1.PodGangEntry{
+		testutils.NewAnchorEntry("hash", "1000", 0, "sg", 0),
+		testutils.NewTailEntry("hash", "1001", "sg", 1),
+	}
+
+	entry, err := FindPodGangEntryForPCSGReplica(entries, "hash", "sg", 1)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	assert.Equal(t, "1001", entry.Epoch)
+
+	duplicate := append(entries, testutils.NewScaleOutEntry("hash", "1002", "sg", 1))
+	_, err = FindPodGangEntryForPCSGReplica(duplicate, "hash", "sg", 1)
+	require.Error(t, err)
 }

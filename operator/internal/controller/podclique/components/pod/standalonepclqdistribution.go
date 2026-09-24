@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -46,7 +47,7 @@ func (r _resource) reconcileStandalonePCLQDistribution(ctx context.Context, logg
 	// PodClique still wants replicas this is a transient state, the PodGangMap has not authored or
 	// absorbed the anchor entry yet, so requeue and wait. When the PodClique is scaled to zero the empty
 	// desired count is correct, so fall through and let the delta computation delete the excess pods.
-	if len(desiredCountByPodGang) == 0 && ss.pclq.Spec.Replicas > 0 {
+	if len(desiredCountByPodGang) == 0 && ptr.Deref(ss.pclq.Spec.Replicas, 1) > 0 {
 		return groveerr.New(groveerr.ErrCodeRequeueAfter, component.OperationSync,
 			fmt.Sprintf("PodGangMap has no anchor entry for standalone PodClique %v yet, re-queueing", client.ObjectKeyFromObject(ss.pclq)))
 	}
@@ -69,7 +70,7 @@ func (r _resource) reconcileStandalonePCLQDistribution(ctx context.Context, logg
 
 	// With more than one anchor the PodGangMap decides which anchor a Spec.Replicas change lands on.
 	// Wait until it has absorbed the change. A single anchor has nothing to decide.
-	if len(desiredCountByPodGang) > 1 && sumCounts(desiredCountByPodGang) != ss.pclq.Spec.Replicas {
+	if len(desiredCountByPodGang) > 1 && sumCounts(desiredCountByPodGang) != ptr.Deref(ss.pclq.Spec.Replicas, 1) {
 		return groveerr.New(groveerr.ErrCodeRequeueAfter, component.OperationSync,
 			fmt.Sprintf("PodGangMap has not yet absorbed the replica change for standalone PodClique %v, re-queueing", client.ObjectKeyFromObject(ss.pclq)))
 	}
@@ -275,7 +276,7 @@ func (r _resource) buildPerPodGangCreationTasks(logger logr.Logger, ss *syncSnap
 			return nil, err
 		}
 		for created := int32(0); created < countDeltaByPodGang[podGangName]; created++ {
-			tasks = append(tasks, r.createPodCreationTask(logger, ss.pcs, ss.pclq, podGangName, expectationsKey, taskIndex, availableIndices[taskIndex]))
+			tasks = append(tasks, r.createPodCreationTask(logger, ss, podGangName, expectationsKey, taskIndex, availableIndices[taskIndex]))
 			taskIndex++
 		}
 	}

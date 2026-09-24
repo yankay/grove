@@ -42,7 +42,7 @@ func TestDefaultPodCliqueSet(t *testing.T) {
 				Cliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{{
 					Name: "test",
 					Spec: grovecorev1alpha1.PodCliqueSpec{
-						Replicas: 2,
+						Replicas: ptr.To[int32](2),
 						PodSpec: corev1.PodSpec{
 							RestartPolicy:                 corev1.RestartPolicyAlways,
 							TerminationGracePeriodSeconds: ptr.To[int64](30),
@@ -74,7 +74,7 @@ func TestDefaultPodCliqueSet(t *testing.T) {
 				Cliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{{
 					Name: "test",
 					Spec: grovecorev1alpha1.PodCliqueSpec{
-						Replicas: 2,
+						Replicas: ptr.To[int32](2),
 						ScaleConfig: &grovecorev1alpha1.AutoScalingConfig{
 							MinReplicas: ptr.To[int32](2),
 							MaxReplicas: 3,
@@ -99,12 +99,27 @@ func TestDefaultPodCliqueTemplateSpecs(t *testing.T) {
 		verify func(*testing.T, []*grovecorev1alpha1.PodCliqueTemplateSpec)
 	}{
 		{
-			name: "replicas defaults to 1 when 0",
+			name: "omitted replicas defaults before minimum and autoscaling floor",
+			input: []*grovecorev1alpha1.PodCliqueTemplateSpec{{
+				Name: "worker",
+				Spec: grovecorev1alpha1.PodCliqueSpec{
+					ScaleConfig: &grovecorev1alpha1.AutoScalingConfig{MaxReplicas: 3},
+				},
+			}},
+			verify: func(t *testing.T, result []*grovecorev1alpha1.PodCliqueTemplateSpec) {
+				require.Len(t, result, 1)
+				require.Equal(t, ptr.To(int32(1)), result[0].Spec.Replicas)
+				require.Equal(t, ptr.To(int32(1)), result[0].Spec.MinAvailable)
+				require.Equal(t, ptr.To(int32(1)), result[0].Spec.ScaleConfig.MinReplicas)
+			},
+		},
+		{
+			name: "explicit replicas 0 is preserved and minAvailable defaults to 1",
 			input: []*grovecorev1alpha1.PodCliqueTemplateSpec{
 				{
 					Name: "clique1",
 					Spec: grovecorev1alpha1.PodCliqueSpec{
-						Replicas: 0,
+						Replicas: ptr.To[int32](0),
 						RoleName: "role1",
 						PodSpec:  corev1.PodSpec{},
 					},
@@ -112,16 +127,18 @@ func TestDefaultPodCliqueTemplateSpecs(t *testing.T) {
 			},
 			verify: func(t *testing.T, result []*grovecorev1alpha1.PodCliqueTemplateSpec) {
 				require.Len(t, result, 1)
-				assert.Equal(t, int32(1), result[0].Spec.Replicas)
+				assert.Equal(t, int32(0), ptr.Deref(result[0].Spec.Replicas, 1))
+				require.NotNil(t, result[0].Spec.MinAvailable)
+				assert.Equal(t, int32(1), *result[0].Spec.MinAvailable)
 			},
 		},
 		{
-			name: "minAvailable and scaleConfig minReplicas default to the defaulted replicas when replicas is 0",
+			name: "idle replicas retain positive availability and autoscaling defaults",
 			input: []*grovecorev1alpha1.PodCliqueTemplateSpec{
 				{
 					Name: "clique1",
 					Spec: grovecorev1alpha1.PodCliqueSpec{
-						Replicas:     0,
+						Replicas:     ptr.To[int32](0),
 						RoleName:     "role1",
 						MinAvailable: nil,
 						PodSpec:      corev1.PodSpec{},
@@ -134,7 +151,7 @@ func TestDefaultPodCliqueTemplateSpecs(t *testing.T) {
 			},
 			verify: func(t *testing.T, result []*grovecorev1alpha1.PodCliqueTemplateSpec) {
 				require.Len(t, result, 1)
-				assert.Equal(t, int32(1), result[0].Spec.Replicas)
+				assert.Equal(t, int32(0), ptr.Deref(result[0].Spec.Replicas, 1))
 				require.NotNil(t, result[0].Spec.MinAvailable)
 				assert.Equal(t, int32(1), *result[0].Spec.MinAvailable)
 				require.NotNil(t, result[0].Spec.ScaleConfig)
@@ -148,7 +165,7 @@ func TestDefaultPodCliqueTemplateSpecs(t *testing.T) {
 				{
 					Name: "clique1",
 					Spec: grovecorev1alpha1.PodCliqueSpec{
-						Replicas:     5,
+						Replicas:     ptr.To[int32](5),
 						RoleName:     "role1",
 						MinAvailable: nil,
 						PodSpec:      corev1.PodSpec{},
@@ -167,7 +184,7 @@ func TestDefaultPodCliqueTemplateSpecs(t *testing.T) {
 				{
 					Name: "clique1",
 					Spec: grovecorev1alpha1.PodCliqueSpec{
-						Replicas:     5,
+						Replicas:     ptr.To[int32](5),
 						RoleName:     "role1",
 						MinAvailable: ptr.To(int32(3)),
 						PodSpec:      corev1.PodSpec{},
@@ -186,7 +203,7 @@ func TestDefaultPodCliqueTemplateSpecs(t *testing.T) {
 				{
 					Name: "clique1",
 					Spec: grovecorev1alpha1.PodCliqueSpec{
-						Replicas: 5,
+						Replicas: ptr.To[int32](5),
 						RoleName: "role1",
 						PodSpec:  corev1.PodSpec{},
 						ScaleConfig: &grovecorev1alpha1.AutoScalingConfig{
@@ -209,7 +226,7 @@ func TestDefaultPodCliqueTemplateSpecs(t *testing.T) {
 				{
 					Name: "clique1",
 					Spec: grovecorev1alpha1.PodCliqueSpec{
-						Replicas: 5,
+						Replicas: ptr.To[int32](5),
 						RoleName: "role1",
 						PodSpec:  corev1.PodSpec{},
 						ScaleConfig: &grovecorev1alpha1.AutoScalingConfig{
@@ -232,7 +249,7 @@ func TestDefaultPodCliqueTemplateSpecs(t *testing.T) {
 				{
 					Name: "clique1",
 					Spec: grovecorev1alpha1.PodCliqueSpec{
-						Replicas:    5,
+						Replicas:    ptr.To[int32](5),
 						RoleName:    "role1",
 						PodSpec:     corev1.PodSpec{},
 						ScaleConfig: nil,
@@ -250,7 +267,7 @@ func TestDefaultPodCliqueTemplateSpecs(t *testing.T) {
 				{
 					Name: "clique1",
 					Spec: grovecorev1alpha1.PodCliqueSpec{
-						Replicas: 1,
+						Replicas: ptr.To[int32](1),
 						RoleName: "role1",
 						PodSpec:  corev1.PodSpec{},
 					},
@@ -545,26 +562,26 @@ func TestDefaultRollingUpdateForTemplateSpecsPerStrategy(t *testing.T) {
 		{
 			description:        "rollingRecreate defaults standalone MaxUnavailable to 1",
 			updateStrategy:     grovecorev1alpha1.RollingRecreateStrategy,
-			input:              &grovecorev1alpha1.PodCliqueTemplateSpec{Name: "standalone", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 5, MinAvailable: ptr.To[int32](3)}},
+			input:              &grovecorev1alpha1.PodCliqueTemplateSpec{Name: "standalone", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](5), MinAvailable: ptr.To[int32](3)}},
 			wantMaxUnavailable: 1,
 		},
 		{
 			description:          "onDelete leaves standalone RollingUpdate nil",
 			updateStrategy:       grovecorev1alpha1.OnDeleteStrategy,
-			input:                &grovecorev1alpha1.PodCliqueTemplateSpec{Name: "standalone", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 5, MinAvailable: ptr.To[int32](3)}},
+			input:                &grovecorev1alpha1.PodCliqueTemplateSpec{Name: "standalone", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](5), MinAvailable: ptr.To[int32](3)}},
 			wantRollingUpdateNil: true,
 		},
 		{
 			description:        "onDelete leaves an existing standalone RollingUpdate untouched for the validating webhook to reject",
 			updateStrategy:     grovecorev1alpha1.OnDeleteStrategy,
-			input:              &grovecorev1alpha1.PodCliqueTemplateSpec{Name: "standalone", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 5, MinAvailable: ptr.To[int32](3)}, RollingUpdate: &grovecorev1alpha1.RollingUpdateConfiguration{MaxUnavailable: ptr.To[int32](2)}},
+			input:              &grovecorev1alpha1.PodCliqueTemplateSpec{Name: "standalone", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](5), MinAvailable: ptr.To[int32](3)}, RollingUpdate: &grovecorev1alpha1.RollingUpdateConfiguration{MaxUnavailable: ptr.To[int32](2)}},
 			wantMaxUnavailable: 2,
 		},
 		{
 			description:          "PCSG-owned clique is skipped",
 			updateStrategy:       grovecorev1alpha1.RollingRecreateStrategy,
 			pcsgOwnedCliqueNames: sets.New("member"),
-			input:                &grovecorev1alpha1.PodCliqueTemplateSpec{Name: "member", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 5, MinAvailable: ptr.To[int32](3)}},
+			input:                &grovecorev1alpha1.PodCliqueTemplateSpec{Name: "member", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](5), MinAvailable: ptr.To[int32](3)}},
 			wantRollingUpdateNil: true,
 		},
 	}

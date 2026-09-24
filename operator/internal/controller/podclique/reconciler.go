@@ -42,10 +42,12 @@ import (
 type Reconciler struct {
 	config                  configv1alpha1.PodCliqueControllerConfiguration
 	client                  ctrlclient.Client
+	apiReader               ctrlclient.Reader
 	eventRecorder           record.EventRecorder
 	reconcileStatusRecorder ctrlcommon.ReconcileErrorRecorder
 	expectationsStore       *expect.ExpectationsStore
 	operatorRegistry        component.OperatorRegistry[grovecorev1alpha1.PodClique]
+	schedRegistry           scheduler.Registry
 }
 
 // NewReconciler creates a new instance of the PodClique Reconciler.
@@ -59,10 +61,12 @@ func NewReconciler(mgr ctrl.Manager, controllerCfg configv1alpha1.PodCliqueContr
 	return &Reconciler{
 		config:                  controllerCfg,
 		client:                  mgr.GetClient(),
+		apiReader:               mgr.GetAPIReader(),
 		eventRecorder:           eventRecorder,
 		reconcileStatusRecorder: ctrlcommon.NewReconcileErrorRecorder(mgr.GetClient()),
 		expectationsStore:       expectationsStore,
 		operatorRegistry:        operatorRegistry,
+		schedRegistry:           schedRegistry,
 	}, nil
 }
 
@@ -101,7 +105,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrlcommon.ReconcileAfter(podgangmigrator.MigrationRequeueInterval, "PodGang migration in progress for owner PodCliqueSet").Result()
 	}
 
-	reconcileSpecFlowResult := r.reconcileSpec(ctx, logger, pclq)
+	reconcileSpecFlowResult := r.reconcileGangRecovery(ctx, logger, pcs, pclq)
+	if !ctrlcommon.ShortCircuitReconcileFlow(reconcileSpecFlowResult) {
+		reconcileSpecFlowResult = r.reconcileSpec(ctx, logger, pclq)
+	}
 	statusReconcileResult := r.reconcileStatus(ctx, logger, pclq)
 	reconcileResult := ctrlcommon.MergeStepResults(reconcileSpecFlowResult, statusReconcileResult)
 

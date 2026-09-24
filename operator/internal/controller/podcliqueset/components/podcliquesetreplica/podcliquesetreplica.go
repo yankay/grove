@@ -60,6 +60,9 @@ func (r _resource) GetExistingResourceNames(_ context.Context, _ logr.Logger, _ 
 // Sync orchestrates replica deletion and rolling updates for the PodCliqueSet.
 func (r _resource) Sync(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet) error {
 	pcsObjectKey := client.ObjectKeyFromObject(pcs)
+	if err := r.pruneGangRecoveries(ctx, pcs); err != nil {
+		return fmt.Errorf("prune gang recovery records for PCS %v: %w", pcsObjectKey, err)
+	}
 
 	delWork, err := r.getPCSReplicaDeletionWork(ctx, logger, pcs)
 	if err != nil {

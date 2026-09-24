@@ -21,6 +21,7 @@ import (
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 
 	"github.com/stretchr/testify/assert"
+	"k8s.io/utils/ptr"
 )
 
 func TestResolveEffectiveTopologyNameForPodCliqueSet(t *testing.T) {
@@ -29,7 +30,7 @@ func TestResolveEffectiveTopologyNameForPodCliqueSet(t *testing.T) {
 			Spec: grovecorev1alpha1.PodCliqueSetSpec{
 				Template: grovecorev1alpha1.PodCliqueSetTemplateSpec{
 					Cliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{
-						{Name: "worker", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1}},
+						{Name: "worker", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1)}},
 					},
 				},
 			},
@@ -147,14 +148,14 @@ func TestResolveEffectiveTopologyNameForPodCliqueSet(t *testing.T) {
 							TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{
 								PackDomain: grovecorev1alpha1.TopologyDomainHost,
 							},
-							Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1},
+							Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1)},
 						},
 						{
 							Name: "grouped",
 							TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{
 								PackDomain: grovecorev1alpha1.TopologyDomainHost,
 							},
-							Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1},
+							Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1)},
 						},
 					}
 					pcs.Spec.Template.PodCliqueScalingGroupConfigs = []grovecorev1alpha1.PodCliqueScalingGroupConfig{
@@ -298,7 +299,7 @@ func TestFindExplicitTopologyNameForPodCliqueSet(t *testing.T) {
 			Spec: grovecorev1alpha1.PodCliqueSetSpec{
 				Template: grovecorev1alpha1.PodCliqueSetTemplateSpec{
 					Cliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{
-						{Name: "worker", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1}},
+						{Name: "worker", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1)}},
 					},
 				},
 			},
