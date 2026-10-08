@@ -93,7 +93,7 @@ func TestMemberScaleAdmission(t *testing.T) {
 			}},
 		},
 	}
-	for _, raw := range []string{operatorcrds.PodCliqueCRD(), operatorcrds.PodCliqueScalingGroupCRD()} {
+	for _, raw := range []string{operatorcrds.PodCliqueCRD(), operatorcrds.PodCliqueScalingGroupCRD(), operatorcrds.PodCliqueSetCRD()} {
 		crd := &apiextensionsv1.CustomResourceDefinition{}
 		require.NoError(t, yaml.Unmarshal([]byte(raw), crd))
 		testEnv.CRDs = append(testEnv.CRDs, crd)

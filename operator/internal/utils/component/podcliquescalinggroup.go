@@ -113,6 +113,27 @@ func StartupDependencies(pcs *grovecorev1alpha1.PodCliqueSet, foundAtIndex int, 
 	return nil
 }
 
+// GenerateDependencyNamesForEntries resolves candidates from committed placement rather than the
+// bootstrap minimum indices. Coherent updates can put any PCSG replica index in an anchor.
+// StartupDependencies filters these candidates to the target PodGang's active members.
+func GenerateDependencyNamesForEntries(pcs *grovecorev1alpha1.PodCliqueSet, pcsReplicaIndex int, cliqueName string, entries []grovecorev1alpha1.PodGangEntry) []string {
+	rnr := apicommon.ResourceNameReplica{Name: pcs.Name, Replica: pcsReplicaIndex}
+	group := FindScalingGroupConfigForClique(pcs.Spec.Template.PodCliqueScalingGroupConfigs, cliqueName)
+	if group == nil {
+		return []string{apicommon.GeneratePodCliqueName(rnr, cliqueName)}
+	}
+	indices := sets.New[int32]()
+	for _, entry := range entries {
+		indices.Insert(entry.PCSGReplicaIndices[group.Name]...)
+	}
+	groupName := apicommon.GeneratePodCliqueScalingGroupName(rnr, group.Name)
+	names := make([]string, 0, len(indices))
+	for _, index := range sets.List(indices) {
+		names = append(names, apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{Name: groupName, Replica: int(index)}, cliqueName))
+	}
+	return names
+}
+
 // GroupPCSGsByPCSReplicaIndex filters PCSGs that have a PodCliqueSetReplicaIndex label and groups them by the PCS replica index.
 // A PodCliqueSetReplicaIndex label that is not a valid integer is a contract violation and returns an error.
 func GroupPCSGsByPCSReplicaIndex(pcsgs []grovecorev1alpha1.PodCliqueScalingGroup) (map[int][]grovecorev1alpha1.PodCliqueScalingGroup, error) {

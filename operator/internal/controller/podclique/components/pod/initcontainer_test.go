@@ -44,6 +44,8 @@ func TestResolveStartupDependenciesFromCurrentMembership(t *testing.T) {
 			clique: "decode", groupIndex: "2", gang: "pcs-0-scale-workers-2", want: []string{"pcs-0-workers-2-prefill"}},
 		{name: "standalone skips missing predecessor", startup: grovecorev1alpha1.CliqueStartupTypeInOrder,
 			clique: "worker", gang: "pcs-0-anchor"},
+		{name: "coherent anchor includes all colocated replicas beyond the bootstrap minimum", startup: grovecorev1alpha1.CliqueStartupTypeInOrder,
+			clique: "decode", groupIndex: "3", gang: "pcs-0-new-anchor", want: []string{"pcs-0-workers-3-prefill", "pcs-0-workers-4-prefill"}},
 		{name: "any order has no dependency", startup: grovecorev1alpha1.CliqueStartupTypeAnyOrder,
 			clique: "decode", groupIndex: "0", gang: "pcs-0-anchor"},
 		{name: "unknown gang fails closed", startup: grovecorev1alpha1.CliqueStartupTypeInOrder,
@@ -71,6 +73,8 @@ func TestResolveStartupDependenciesFromCurrentMembership(t *testing.T) {
 							PodCliques: map[string]int32{"worker": 4}, PCSGReplicaIndices: map[string][]int32{"workers": {0}}},
 						{Role: grovecorev1alpha1.PodGangEntryRoleScaleOut, Epoch: "scale",
 							PCSGReplicaIndices: map[string][]int32{"workers": {2}}},
+						{Role: grovecorev1alpha1.PodGangEntryRoleAnchor, Epoch: "new-anchor",
+							PCSGReplicaIndices: map[string][]int32{"workers": {4, 3}}},
 					},
 				}},
 			}

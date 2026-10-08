@@ -2256,8 +2256,8 @@ func TestBuildPodGangInfosFromEmptyAnchorEntry(t *testing.T) {
 	r := &_resource{}
 	ss := &syncState{}
 	emptyAnchor := grovecorev1alpha1.PodGangEntry{
-		Role:        grovecorev1alpha1.PodGangEntryRoleAnchor,
-		Epoch:       "100",
+		Role:  grovecorev1alpha1.PodGangEntryRoleAnchor,
+		Epoch: "100",
 	}
 
 	infos, err := r.buildPodGangInfosFromEntry(ss, 0, emptyAnchor, true)

@@ -17,8 +17,6 @@ package pod
 import (
 	"fmt"
 	"os"
-	"slices"
-	"strconv"
 	"strings"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
@@ -51,23 +49,8 @@ func resolveStartupDependencies(ss *syncSnapshot, podGangName string) ([]string,
 	if err != nil {
 		return nil, err
 	}
-	group := componentutils.FindScalingGroupConfigForClique(ss.pcs.Spec.Template.PodCliqueScalingGroupConfigs, ss.cliqueName)
-	var groupReplica int
-	if group != nil {
-		groupReplica, err = strconv.Atoi(ss.pclq.Labels[apicommon.LabelPodCliqueScalingGroupReplicaIndex])
-		if err != nil || groupReplica < 0 {
-			return nil, fmt.Errorf("PodClique %s has invalid scaling group replica index %q", ss.pclq.Name,
-				ss.pclq.Labels[apicommon.LabelPodCliqueScalingGroupReplicaIndex])
-		}
-	}
 	return componentutils.StartupDependencies(ss.pcs, templateIndex, template.Spec.StartsAfter, active, func(name string) []string {
-		candidates := componentutils.GenerateDependencyNamesForBasePodGang(ss.pcs, ss.pcsReplicaIndex, name)
-		if group != nil && slices.Contains(group.CliqueNames, name) {
-			candidates = append(candidates, apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{
-				Name: apicommon.GeneratePodCliqueScalingGroupName(rnr, group.Name), Replica: groupReplica,
-			}, name))
-		}
-		return candidates
+		return componentutils.GenerateDependencyNamesForEntries(ss.pcs, ss.pcsReplicaIndex, name, ss.pgm.Spec.Entries)
 	}), nil
 }
 

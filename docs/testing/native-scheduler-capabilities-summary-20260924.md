@@ -2,6 +2,8 @@
 
 Test date: September 24, 2026 (Asia/Shanghai).
 
+Historical configuration note, October 8, 2026: the [coherent hibernation prototype](coherent-hibernation-prototype.md) now leaves KAI native gang termination enabled. The negative-staleness KAI results below do not qualify that configuration. The recorded results and their original scope are unchanged.
+
 ## Scope
 
 This summary compares the native capabilities of KAI Scheduler, Volcano, and Kubernetes Workload-Aware Scheduling (WAS). No Grove installation, resources, controllers, or integration are involved.

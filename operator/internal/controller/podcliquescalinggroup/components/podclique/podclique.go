@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -375,7 +374,7 @@ func (r _resource) buildResource(logger logr.Logger, ss *syncSnapshot, pcsgRepli
 			fmt.Sprintf("failed to resolve active PodCliques for PodClique: %v", pclqObjectKey),
 		)
 	}
-	dependentPCLQNames, err := identifyFullyQualifiedStartupDependencyNames(pcs, pcsReplicaIndex, pcsg, pcsgReplicaIndex, pclq, foundAtIndex, activePCLQNames)
+	dependentPCLQNames, err := identifyFullyQualifiedStartupDependencyNames(pcs, pcsReplicaIndex, ss.pgm.Spec.Entries, pclq, foundAtIndex, activePCLQNames)
 	if err != nil {
 		return err
 	}
@@ -450,7 +449,7 @@ func getPCSReplicaFromPCSG(pcsg *grovecorev1alpha1.PodCliqueScalingGroup) (int, 
 }
 
 // identifyFullyQualifiedStartupDependencyNames resolves startup dependencies based on PCS startup type configuration
-func identifyFullyQualifiedStartupDependencyNames(pcs *grovecorev1alpha1.PodCliqueSet, pcsReplicaIndex int, pcsg *grovecorev1alpha1.PodCliqueScalingGroup, pcsgReplicaIndex int, pclq *grovecorev1alpha1.PodClique, foundAtIndex int, activePCLQNames sets.Set[string]) ([]string, error) {
+func identifyFullyQualifiedStartupDependencyNames(pcs *grovecorev1alpha1.PodCliqueSet, pcsReplicaIndex int, entries []grovecorev1alpha1.PodGangEntry, pclq *grovecorev1alpha1.PodClique, foundAtIndex int, activePCLQNames sets.Set[string]) ([]string, error) {
 	cliqueStartupType := pcs.Spec.Template.StartupType
 	if cliqueStartupType == nil {
 		// Ideally this should never happen as the defaulting webhook should set it v1alpha1.CliqueStartupTypeInOrder as the default value.
@@ -458,12 +457,7 @@ func identifyFullyQualifiedStartupDependencyNames(pcs *grovecorev1alpha1.PodCliq
 		return nil, groveerr.New(errCodeMissingStartupType, component.OperationSync, fmt.Sprintf("PodClique: %v has nil StartupType", client.ObjectKeyFromObject(pclq)))
 	}
 	return componentutils.StartupDependencies(pcs, foundAtIndex, pclq.Spec.StartsAfter, activePCLQNames, func(cliqueName string) []string {
-		candidates := componentutils.GenerateDependencyNamesForBasePodGang(pcs, pcsReplicaIndex, cliqueName)
-		if slices.Contains(pcsg.Spec.CliqueNames, cliqueName) {
-			candidates = append(candidates, apicommon.GeneratePodCliqueName(
-				apicommon.ResourceNameReplica{Name: pcsg.Name, Replica: pcsgReplicaIndex}, cliqueName))
-		}
-		return candidates
+		return componentutils.GenerateDependencyNamesForEntries(pcs, pcsReplicaIndex, cliqueName, entries)
 	}), nil
 }
 

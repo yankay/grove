@@ -47,6 +47,24 @@ const (
 	testPCSNamespace = "cobalt-ns"
 )
 
+func TestCreateOrPatchPreservesIdleTargetAfterStaleList(t *testing.T) {
+	pcs := testutils.NewPodCliqueSetBuilder(testPCSName, testPCSNamespace, uuid.NewUUID()).
+		WithStandaloneCliqueReplicas("worker", 3).
+		WithCliqueStartupType(ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder)).
+		Build()
+	pclq := testutils.NewPodCliqueBuilder(pcs.Name, pcs.UID, "worker", pcs.Namespace, 0).
+		WithReplicas(0).Build()
+	cl := testutils.NewTestClientBuilder().WithObjects(pcs, pclq).Build()
+	r := &_resource{client: cl, scheme: cl.Scheme(), eventRecorder: record.NewFakeRecorder(10)}
+	key := client.ObjectKeyFromObject(pclq)
+
+	require.NoError(t, r.doCreateOrUpdate(t.Context(), logr.Discard(), pcs, 0, key, false))
+	current := &grovecorev1alpha1.PodClique{}
+	require.NoError(t, cl.Get(t.Context(), key, current))
+	assert.Equal(t, ptr.To(int32(0)), current.Spec.Replicas)
+	assert.NotContains(t, current.Labels, apicommon.LabelPodGang, "standalone Pods, not their PodClique, carry gang placement")
+}
+
 func TestGetExistingResourceNames(t *testing.T) {
 	testCases := []struct {
 		description                 string

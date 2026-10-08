@@ -270,3 +270,46 @@ func TestMultiplePCSGWakesRestoreAnchorQuorums(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, entries, reversed, "PCSG observation order must not change wake placement")
 }
+
+func TestHibernationDoesNotAdvanceFrozenCoherentReplica(t *testing.T) {
+	pcs := testutils.NewPodCliqueSetBuilder(testPCSName, testNamespace, testPCSUID).
+		WithStandaloneCliqueReplicas("worker", 0).
+		WithScalingGroupConfig(testPCSGName, []string{"c"}, 0, 2).
+		WithUpdateStrategy(&grovecorev1alpha1.PodCliqueSetUpdateStrategy{Type: grovecorev1alpha1.CoherentStrategy}).
+		WithPodCliqueSetGenerationHash(ptr.To("new-hash")).Build()
+	pgm := &grovecorev1alpha1.PodGangMap{Spec: grovecorev1alpha1.PodGangMapSpec{
+		Entries: []grovecorev1alpha1.PodGangEntry{
+			anchorEntry(map[string]int32{"worker": 2}, map[string][]int32{testPCSGName: {0, 1}}),
+			scaleOutEntry(nil),
+		},
+	}}
+	before := pgm.DeepCopy()
+	clk := clocktesting.NewFakeClock(time.Unix(0, 5000))
+	entries, err := reconcileEntries(clk, pcs, 0, pgm, nil,
+		[]grovecorev1alpha1.PodClique{standalonePCLQ("worker", 2)},
+		[]grovecorev1alpha1.PodCliqueScalingGroup{pcsg(2)})
+	require.NoError(t, err)
+	assert.Equal(t, before.Spec.Entries, entries)
+	assert.Equal(t, before, pgm)
+}
+
+func TestWakeFromEmptyMapUsesScaleOutRegardlessOfTemplate(t *testing.T) {
+	for _, templateReplicas := range []int32{0, 3} {
+		t.Run(strconv.Itoa(int(templateReplicas)), func(t *testing.T) {
+			pcs := testutils.NewPodCliqueSetBuilder(testPCSName, testNamespace, testPCSUID).
+				WithScalingGroupConfig(testPCSGName, []string{"c"}, templateReplicas, 2).
+				WithPodCliqueSetGenerationHash(ptr.To(testGenHash)).Build()
+			pgm := &grovecorev1alpha1.PodGangMap{}
+			clk := clocktesting.NewFakeClock(time.Unix(0, 5000))
+			entries, err := reconcileEntries(clk, pcs, 0, pgm, nil, nil,
+				[]grovecorev1alpha1.PodCliqueScalingGroup{pcsg(3)})
+			require.NoError(t, err)
+			require.Len(t, entries, 2)
+			anchor := testutils.EntryByRole(entries, grovecorev1alpha1.PodGangEntryRoleAnchor)
+			extra := testutils.EntryByRole(entries, grovecorev1alpha1.PodGangEntryRoleScaleOut)
+			assert.Equal(t, []int32{0, 1}, anchor.PCSGReplicaIndices[testPCSGName])
+			assert.Equal(t, []int32{2}, extra.PCSGReplicaIndices[testPCSGName])
+			assert.Equal(t, []string{anchor.Epoch}, extra.DependsOn)
+		})
+	}
+}

@@ -733,8 +733,7 @@ func TestIdentifyFullyQualifiedStartupDependencyNames(t *testing.T) {
 			result, err := identifyFullyQualifiedStartupDependencyNames(
 				tc.pcs,
 				tc.pcsReplica,
-				tc.pcsg,
-				tc.pcsgReplica,
+				nil,
 				tc.pclq,
 				tc.foundAtIndex,
 				sets.New(tc.active...),
@@ -758,10 +757,10 @@ func TestStartupDependenciesStayWithinMaterializedPodGang(t *testing.T) {
 		WithStandaloneCliqueReplicas("idle", 0).
 		WithScalingGroupConfig("sg", []string{"prefill", "decode"}, 2, 1).
 		Build()
-	pcsg := testutils.NewPodCliqueScalingGroupBuilder("test-pcs-0-sg", "default", "test-pcs", 0).
-		WithCliqueNames([]string{"prefill", "decode"}).
-		WithMinAvailable(1).
-		Build()
+	entries := []grovecorev1alpha1.PodGangEntry{
+		testutils.NewAnchorEntry("hash", "100", "sg", 0),
+		testutils.NewTailEntry("hash", "101", "sg", 1),
+	}
 	pclq := &grovecorev1alpha1.PodClique{}
 
 	t.Run("anchor skips idle predecessor and finds nearest active clique", func(t *testing.T) {
@@ -770,7 +769,7 @@ func TestStartupDependenciesStayWithinMaterializedPodGang(t *testing.T) {
 			"test-pcs-0-sg-0-prefill",
 			"test-pcs-0-sg-0-decode",
 		)
-		actual, err := identifyFullyQualifiedStartupDependencyNames(pcs, 0, pcsg, 0, pclq, 2, active)
+		actual, err := identifyFullyQualifiedStartupDependencyNames(pcs, 0, entries, pclq, 2, active)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"test-pcs-0-router"}, actual)
 	})
@@ -780,7 +779,7 @@ func TestStartupDependenciesStayWithinMaterializedPodGang(t *testing.T) {
 			"test-pcs-0-sg-1-prefill",
 			"test-pcs-0-sg-1-decode",
 		)
-		actual, err := identifyFullyQualifiedStartupDependencyNames(pcs, 0, pcsg, 1, pclq, 3, active)
+		actual, err := identifyFullyQualifiedStartupDependencyNames(pcs, 0, entries, pclq, 3, active)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"test-pcs-0-sg-1-prefill"}, actual)
 	})
@@ -792,7 +791,7 @@ func TestStartupDependenciesStayWithinMaterializedPodGang(t *testing.T) {
 			"test-pcs-0-sg-1-prefill",
 			"test-pcs-0-sg-1-decode",
 		)
-		actual, err := identifyFullyQualifiedStartupDependencyNames(pcs, 0, pcsg, 1, pclq, 3, active)
+		actual, err := identifyFullyQualifiedStartupDependencyNames(pcs, 0, entries, pclq, 3, active)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"test-pcs-0-sg-1-prefill"}, actual)
 	})

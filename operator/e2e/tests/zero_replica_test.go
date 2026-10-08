@@ -146,8 +146,8 @@ func Test_ZR2_StandaloneLifecycle(t *testing.T) {
 	if wakeEpoch := maxPGMEpoch(t, ctx, tc, pcsName); wakeEpoch != initialEpoch {
 		t.Fatalf("standalone wake changed anchor epoch: %d -> %d", initialEpoch, wakeEpoch)
 	}
-	if names := podGangNameSet(ctx, t, tc, pcsName); !initialPodGangs.Equal(names) {
-		t.Fatalf("standalone wake changed anchor names: %v -> %v", initialPodGangs, names)
+	if names := podGangNameSet(ctx, t, tc, pcsName); len(names) != 1 || len(initialPodGangs.Intersection(names)) != 0 {
+		t.Fatalf("standalone wake after all-idle must create one fresh anchor: %v -> %v", initialPodGangs, names)
 	}
 	for _, pod := range podsForClique(t, tc, workerName) {
 		if _, existed := initialLocations[pod.UID]; existed {
@@ -229,8 +229,8 @@ func Test_ZR3_PodCliqueScalingGroupLifecycle(t *testing.T) {
 	}
 	rnr := apicommon.ResourceNameReplica{Name: pcsName, Replica: 0}
 	anchorName := apicommon.GenerateAnchorPodGangName(rnr, anchorEpoch)
-	if !initialPodGangs.Has(anchorName) || !wokenNames.Has(anchorName) {
-		t.Fatalf("PCSG wake did not reuse its anchor name %s", anchorName)
+	if initialPodGangs.Has(anchorName) || !wokenNames.Has(anchorName) {
+		t.Fatalf("PCSG wake after all-idle must create a fresh anchor: %s", anchorName)
 	}
 	scaledName := apicommon.GenerateNonAnchorPodGangName(rnr, scaleOutEpoch, "workers", 2)
 	if !wokenNames.Has(scaledName) || initialPodGangs.Has(scaledName) {

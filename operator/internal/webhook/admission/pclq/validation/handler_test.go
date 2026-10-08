@@ -110,7 +110,7 @@ func TestHandlePodCliqueUpdate(t *testing.T) {
 
 			cl := testutils.NewTestClientBuilder().WithObjects(tt.oldPCLQ).Build()
 			resp := (&Handler{reader: cl, logger: logr.Discard()}).Handle(t.Context(), admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
-				Name: tt.oldPCLQ.Name,
+				Name:      tt.oldPCLQ.Name,
 				Namespace: tt.oldPCLQ.Namespace,
 				Operation: admissionv1.Update,
 				OldObject: runtime.RawExtension{Raw: oldRaw},

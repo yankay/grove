@@ -46,12 +46,9 @@ The `Test_ZR*`, `Test_GT7*`, and `Test_GS13*` tests also run against an existing
 Use a dedicated cluster: these tests delete Grove workloads, cordon worker nodes,
 and restart the Grove operator.
 
-Install Grove in `grove-system` as `grove-operator`, enable the matching scheduler
-profile, and provide at least six Ready worker nodes labeled
-`node_role.e2e.grove.nvidia.com=agent`. For KAI, install v0.17.0 or newer, including
-its updated PodGroup CRD, and create the `test` queue. Keep the scheduler's global
-stale-gang eviction default: Grove sets `spec.stalenessGracePeriod: "-1s"` only on
-its own PodGroups. The backend fails startup if the served CRD lacks this field.
+Install Grove in `grove-system` as `grove-operator`, enable the matching scheduler profile, and provide at least six Ready worker nodes labeled `node_role.e2e.grove.nvidia.com=agent`. For KAI, install v0.17.0 or newer, including its updated PodGroup CRD, and create the `test` queue. Keep native gang termination enabled. Grove leaves `spec.stalenessGracePeriod` unset and removes the per-PodGroup negative override written by earlier prototypes; the backend checks that the served CRD supports this field during migration.
+
+The strict router-continuity scenarios are qualification tests, not a support claim. Earlier KAI passes with termination disabled do not qualify the current prototype, and Volcano's native policy synchronization is not a scheduler acknowledgment. See [the coherent hibernation prototype notes](../../docs/testing/coherent-hibernation-prototype.md) for the remaining requirements.
 
 From the `operator` directory:
 

@@ -143,10 +143,9 @@ func buildBootstrapTailEntry(pcs *grovecorev1alpha1.PodCliqueSet, epoch, anchorE
 }
 
 // reconcileEntries authors the desired PodGangMap entries for a PCS replica and returns them for create
-// or patch. When no PodGangMap exists, or one exists with no entries, it starts from a fresh set of
-// bootstrap entries, reusing the epoch the replica's existing PodGangs carry. An entry-less PodGangMap
-// is bootstrapped the same way so a replica whose entries were all drained recovers instead of staying
-// empty. When a PodGangMap with entries exists it starts from those entries, advancing them to the
+// or patch. A missing PodGangMap starts from bootstrap entries and can reuse existing PodGang epochs.
+// An existing empty map wakes with fresh epochs and puts extra replicas in ScaleOut so they wait for
+// the live minimum replicas. A populated map starts from its committed entries, advancing them to the
 // current generation hash unless a coherent update is in progress.
 //
 // Each entry keeps its identity (epoch, role, DependsOn) and its already-placed replica
@@ -184,6 +183,15 @@ func reconcileEntries(clk clock.Clock,
 			reconstructionSource = nil
 		}
 		entries, scaleOutEpoch = buildBootstrapEntries(clk, pcs, reconstructionSource)
+		if pgm != nil {
+			// A retained, empty map is a wake, not initial bootstrap. Template-sized extras
+			// must use ScaleOut too, so they wait for this wake's live minimum replicas.
+			for i := range entries {
+				if entries[i].Role == grovecorev1alpha1.PodGangEntryRoleTail {
+					entries[i].Role = grovecorev1alpha1.PodGangEntryRoleScaleOut
+				}
+			}
+		}
 	} else {
 		// Deep-copy the existing entries so mutations here do not alias the snapshot's PodGangMap.
 		entries = clonePodGangEntries(pgm.Spec.Entries)
@@ -328,7 +336,7 @@ func reconcileStandaloneCliqueCountAcrossAnchors(anchorsHighestFirst []*grovecor
 // currentGenerationAnchorsByEpochDesc orders current-generation anchors by numeric epoch, newest first.
 func currentGenerationAnchorsByEpochDesc(entries []grovecorev1alpha1.PodGangEntry, currentHash string) ([]*grovecorev1alpha1.PodGangEntry, error) {
 	type anchorWithEpoch struct {
-		entry *grovecorev1alpha1.PodGangEntry
+		entry      *grovecorev1alpha1.PodGangEntry
 		epochNanos int64
 	}
 	var paired []anchorWithEpoch

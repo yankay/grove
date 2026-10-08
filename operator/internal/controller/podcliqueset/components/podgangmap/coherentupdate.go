@@ -15,7 +15,6 @@
 package podgangmap
 
 import (
-	"k8s.io/utils/ptr"
 	"context"
 	"fmt"
 
@@ -26,6 +25,7 @@ import (
 	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
