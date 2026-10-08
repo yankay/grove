@@ -105,17 +105,11 @@ func workloadItemTreeForPodGang(podGang *groveschedulerv1alpha1.PodGang, fallbac
 		return nil, fmt.Errorf("PodGang %s/%s has no PodGroups", podGang.Namespace, podGang.Name)
 	}
 
-	rootConstraints, err := toUpstreamTopologyConstraints(podGang.Spec.TopologyConstraint)
-	if err != nil {
-		return nil, fmt.Errorf("PodGang %s/%s topology constraint: %w", podGang.Namespace, podGang.Name, err)
-	}
+	rootConstraints := toUpstreamTopologyConstraints(podGang.Spec.TopologyConstraint)
 
 	leafItems := make(map[string]*workloadbuilder.WorkloadItem, len(podGang.Spec.PodGroups))
 	for _, podGroup := range podGang.Spec.PodGroups {
-		leafConstraints, leafErr := toUpstreamTopologyConstraints(podGroup.TopologyConstraint)
-		if leafErr != nil {
-			return nil, fmt.Errorf("PodGang %s/%s PodGroup %q topology constraint: %w", podGang.Namespace, podGang.Name, podGroup.Name, leafErr)
-		}
+		leafConstraints := toUpstreamTopologyConstraints(podGroup.TopologyConstraint)
 		minCount := podGroup.MinReplicas
 		if minCount < 1 {
 			// The upstream gang policy requires minCount >= 1. When Grove releases
@@ -145,10 +139,7 @@ func workloadItemTreeForPodGang(podGang *groveschedulerv1alpha1.PodGang, fallbac
 		if len(groupConfig.PodGroupNames) == 0 {
 			continue
 		}
-		groupConstraints, groupErr := toUpstreamTopologyConstraints(groupConfig.TopologyConstraint)
-		if groupErr != nil {
-			return nil, fmt.Errorf("PodGang %s/%s topology constraint group %q: %w", podGang.Namespace, podGang.Name, groupConfig.Name, groupErr)
-		}
+		groupConstraints := toUpstreamTopologyConstraints(groupConfig.TopologyConstraint)
 		children := make([]*workloadbuilder.WorkloadItem, 0, len(groupConfig.PodGroupNames))
 		for _, podGroupName := range groupConfig.PodGroupNames {
 			leaf, found := leafItems[podGroupName]
@@ -209,8 +200,16 @@ func validateWorkloadLimits(podGang *groveschedulerv1alpha1.PodGang, item *workl
 	if depth > schedulingv1beta1.WorkloadMaxTreeDepth {
 		return fmt.Errorf("PodGang %s/%s maps to a template tree deeper than %d levels at group %q; the %s Workload API supports at most %d levels", podGang.Namespace, podGang.Name, schedulingv1beta1.WorkloadMaxTreeDepth, item.Name, schedulingv1beta1.SchemeGroupVersion.String(), schedulingv1beta1.WorkloadMaxTreeDepth)
 	}
-	if len(item.Children) > schedulingv1beta1.WorkloadMaxPodGroupTemplates {
-		return fmt.Errorf("PodGang %s/%s group %q maps to %d child templates; the %s Workload API supports at most %d templates per group", podGang.Namespace, podGang.Name, item.Name, len(item.Children), schedulingv1beta1.SchemeGroupVersion.String(), schedulingv1beta1.WorkloadMaxPodGroupTemplates)
+	leafCount, compositeCount := 0, 0
+	for _, child := range item.Children {
+		if len(child.Children) == 0 {
+			leafCount++
+		} else {
+			compositeCount++
+		}
+	}
+	if leafCount > schedulingv1beta1.WorkloadMaxPodGroupTemplates || compositeCount > schedulingv1beta1.WorkloadMaxPodGroupTemplates {
+		return fmt.Errorf("PodGang %s/%s group %q maps to %d leaf and %d composite templates; the %s Workload API supports at most %d entries per template list", podGang.Namespace, podGang.Name, item.Name, leafCount, compositeCount, schedulingv1beta1.SchemeGroupVersion.String(), schedulingv1beta1.WorkloadMaxPodGroupTemplates)
 	}
 	for _, child := range item.Children {
 		if err := validateWorkloadLimits(podGang, child, depth+1); err != nil {
@@ -221,22 +220,15 @@ func validateWorkloadLimits(podGang *groveschedulerv1alpha1.PodGang, item *workl
 }
 
 // toUpstreamTopologyConstraints converts a Grove topology constraint into
-// upstream scheduling constraints. Preferred constraints are not supported by
-// Workload-Aware Scheduling and fail closed.
-func toUpstreamTopologyConstraints(topologyConstraint *groveschedulerv1alpha1.TopologyConstraint) (*workloadbuilder.SchedulingConstraints, error) {
-	if topologyConstraint == nil || topologyConstraint.PackConstraint == nil {
-		return nil, nil
-	}
-	packConstraint := topologyConstraint.PackConstraint
-	if packConstraint.Preferred != nil {
-		return nil, fmt.Errorf("preferred topology constraint %q is not supported by the %s API; only required constraints are supported", *packConstraint.Preferred, schedulingv1beta1.SchemeGroupVersion.String())
-	}
-	if packConstraint.Required == nil {
-		return nil, nil
+// upstream scheduling constraints. WAS supports only required constraints;
+// SyncPodGang warns about any ignored preferred constraints.
+func toUpstreamTopologyConstraints(topologyConstraint *groveschedulerv1alpha1.TopologyConstraint) *workloadbuilder.SchedulingConstraints {
+	if topologyConstraint == nil || topologyConstraint.PackConstraint == nil || topologyConstraint.PackConstraint.Required == nil {
+		return nil
 	}
 	return &workloadbuilder.SchedulingConstraints{
-		Topology: []schedulingv1beta1.TopologyConstraint{{Key: *packConstraint.Required}},
-	}, nil
+		Topology: []schedulingv1beta1.TopologyConstraint{{Key: *topologyConstraint.PackConstraint.Required}},
+	}
 }
 
 // podGangOwnerReference returns the controller owner reference pointing at the

@@ -52,6 +52,8 @@ type GroveConfig struct {
 	InstallCRDs bool
 	// Scheduler contains scheduler profile configuration.
 	Scheduler *configv1alpha1.SchedulerConfiguration
+	// TopologyAwareScheduling controls topology constraint validation and translation.
+	TopologyAwareScheduling *configv1alpha1.TopologyAwareSchedulingConfiguration
 	// Webhooks contains webhook-specific configuration.
 	Webhooks WebhooksConfig
 }
@@ -83,8 +85,9 @@ type helmCRDInstallerValues struct {
 }
 
 type helmConfigValues struct {
-	Server    helmServerValues                       `json:"server"`
-	Scheduler *configv1alpha1.SchedulerConfiguration `json:"scheduler,omitempty"`
+	Server                  helmServerValues                                     `json:"server"`
+	Scheduler               *configv1alpha1.SchedulerConfiguration               `json:"scheduler,omitempty"`
+	TopologyAwareScheduling *configv1alpha1.TopologyAwareSchedulingConfiguration `json:"topologyAwareScheduling,omitempty"`
 }
 
 type helmServerValues struct {
@@ -133,7 +136,8 @@ func (c *GroveConfig) toHelmValues() (map[string]interface{}, error) {
 					Port:   DefaultHealthProbePort,
 				},
 			},
-			Scheduler: c.Scheduler,
+			Scheduler:               c.Scheduler,
+			TopologyAwareScheduling: c.TopologyAwareScheduling,
 		},
 		Webhooks: helmWebhookValues{
 			PodCliqueSetValidationWebhook:    anns,

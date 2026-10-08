@@ -354,13 +354,13 @@ kubectl get pods -n <namespace> -l grove.io/podgang=<podgang> -o yaml
 kubectl describe podgangs.scheduler.grove.io <podgang> -n <namespace>
 ```
 
-Backend synchronization failures emit `KubeBackendSyncFailed` warning events on the PodGang. For pending Pods, inspect scheduler events and available capacity as well as group conditions.
+Backend synchronization failures emit `KubeBackendSyncFailed` warning events on the PodGang. Unsupported preferred topology constraints emit `KubeBackendPreferredTopologyIgnored` warning events and are ignored; required constraints remain enforced. For pending Pods, inspect scheduler events and available capacity as well as group conditions.
 
 #### Limitations
 
 - Initial `MinReplicas=0` is unsupported because WAS requires `minCount >= 1`.
 - Each generated template list supports at most eight entries, with hierarchy depth limited to four.
-- Preferred topology constraints are rejected; a generated group supports one required topology key.
+- Preferred topology constraints are ignored with a warning; a generated group supports one required topology key.
 - Changing immutable hierarchy structure requires replacing generated scheduling objects. In-flight hierarchy replacement still requires further end-to-end validation.
 
-See [GREP-531](https://github.com/ai-dynamo/grove/pull/605) for the design and the [WAS test instructions](../operator/e2e/README.md#workload-aware-scheduling-default-scheduler-gang-tests) for local validation.
+See [GREP-531](proposals/531-default-scheduler-hierarchical-scheduling/README.md) for the design and the [WAS test instructions](../operator/e2e/README.md#workload-aware-scheduling-default-scheduler-gang-tests) for local validation.

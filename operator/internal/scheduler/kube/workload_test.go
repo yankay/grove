@@ -16,6 +16,7 @@ package kube
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -173,15 +174,6 @@ func TestBuildWorkloadForPodGang_FailClosed(t *testing.T) {
 		wantErrPart string
 	}{
 		{
-			name: "preferred topology constraint",
-			mutate: func(podGang *groveschedulerv1alpha1.PodGang) {
-				podGang.Spec.TopologyConstraint = &groveschedulerv1alpha1.TopologyConstraint{
-					PackConstraint: &groveschedulerv1alpha1.TopologyPackConstraint{Preferred: ptr.To("kubernetes.io/hostname")},
-				}
-			},
-			wantErrPart: "preferred topology constraint",
-		},
-		{
 			name: "zero minReplicas on creation",
 			mutate: func(podGang *groveschedulerv1alpha1.PodGang) {
 				podGang.Spec.PodGroups[0].MinReplicas = 0
@@ -267,6 +259,35 @@ func TestSyncPodGang_CreatesHierarchy(t *testing.T) {
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "test-pcs-0-decode"}, decodePodGroup))
 	require.NotNil(t, decodePodGroup.Spec.ParentCompositePodGroupName)
 	assert.Equal(t, testPodGangName, *decodePodGroup.Spec.ParentCompositePodGroupName)
+}
+
+func TestBuildWorkloadForPodGang_TemplateListLimits(t *testing.T) {
+	tests := []struct {
+		name       string
+		leaves     int
+		composites int
+		wantError  bool
+	}{
+		{name: "both lists at limit", leaves: 8, composites: 8},
+		{name: "leaf list exceeds limit", leaves: 9, composites: 1, wantError: true},
+		{name: "composite list exceeds limit", leaves: 1, composites: 9, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			podGang := newTestPodGang(withTemplateLists(tt.leaves, tt.composites))
+			workload, err := buildWorkloadForPodGang(podGang, nil)
+			if tt.wantError {
+				require.ErrorContains(t, err, "at most 8 entries per template list")
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, workload.Spec.CompositePodGroupTemplates, 1)
+			root := workload.Spec.CompositePodGroupTemplates[0]
+			assert.Len(t, root.PodGroupTemplates, tt.leaves)
+			assert.Len(t, root.CompositePodGroupTemplates, tt.composites)
+			assert.EqualValues(t, tt.leaves+tt.composites, root.SchedulingPolicy.Gang.MinGroupCount)
+		})
+	}
 }
 
 func TestSyncPodGang_UpdatesMutableMinCount(t *testing.T) {
@@ -452,48 +473,82 @@ func TestBuildWorkloadForPodGang_NestedTopologyLevels(t *testing.T) {
 	assert.Equal(t, "kubernetes.io/hostname", leaf.SchedulingConstraints.Topology[0].Key, "leaf carries the PodGroup constraint")
 }
 
-// TestBuildWorkloadForPodGang_PreferredFailsClosedAtEveryLevel verifies a
-// preferred topology constraint fails closed whether it is set on the PodGang,
-// a topology group, or a PodGroup.
-func TestBuildWorkloadForPodGang_PreferredFailsClosedAtEveryLevel(t *testing.T) {
-	preferred := func() *groveschedulerv1alpha1.TopologyConstraint {
-		return &groveschedulerv1alpha1.TopologyConstraint{
-			PackConstraint: &groveschedulerv1alpha1.TopologyPackConstraint{Preferred: ptr.To("kubernetes.io/hostname")},
-		}
-	}
+func TestSyncPodGang_IgnoresPreferredTopologyAtEveryLevel(t *testing.T) {
 	tests := []struct {
-		name   string
-		mutate func(*groveschedulerv1alpha1.PodGang)
+		name             string
+		selectConstraint func(*groveschedulerv1alpha1.PodGang) *groveschedulerv1alpha1.TopologyConstraint
 	}{
 		{
 			name: "on PodGang",
-			mutate: func(podGang *groveschedulerv1alpha1.PodGang) {
-				podGang.Spec.TopologyConstraint = preferred()
+			selectConstraint: func(podGang *groveschedulerv1alpha1.PodGang) *groveschedulerv1alpha1.TopologyConstraint {
+				return podGang.Spec.TopologyConstraint
 			},
 		},
 		{
 			name: "on PodGroup",
-			mutate: func(podGang *groveschedulerv1alpha1.PodGang) {
-				podGang.Spec.PodGroups[0].TopologyConstraint = preferred()
+			selectConstraint: func(podGang *groveschedulerv1alpha1.PodGang) *groveschedulerv1alpha1.TopologyConstraint {
+				return podGang.Spec.PodGroups[0].TopologyConstraint
 			},
 		},
 		{
 			name: "on topology group",
-			mutate: func(podGang *groveschedulerv1alpha1.PodGang) {
-				podGang.Spec.TopologyConstraintGroupConfigs = append(podGang.Spec.TopologyConstraintGroupConfigs,
-					groveschedulerv1alpha1.TopologyConstraintGroupConfig{
-						Name:               "tcg-a",
-						PodGroupNames:      []string{"test-pcs-0-prefill"},
-						TopologyConstraint: preferred(),
-					})
+			selectConstraint: func(podGang *groveschedulerv1alpha1.PodGang) *groveschedulerv1alpha1.TopologyConstraint {
+				return podGang.Spec.TopologyConstraintGroupConfigs[0].TopologyConstraint
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := buildWorkloadForPodGang(newTestPodGang(tt.mutate), nil)
-			require.Error(t, err)
-			assert.ErrorContains(t, err, "preferred topology constraint")
+			for _, required := range []bool{false, true} {
+				t.Run(fmt.Sprintf("required=%t", required), func(t *testing.T) {
+					podGang := newTestPodGang(withTopologyGroup("tcg-a", []string{"test-pcs-0-prefill"}, "topology.kubernetes.io/rack"))
+					podGang.Spec.TopologyConstraint = &groveschedulerv1alpha1.TopologyConstraint{
+						PackConstraint: &groveschedulerv1alpha1.TopologyPackConstraint{Required: ptr.To("topology.kubernetes.io/zone")},
+					}
+					podGang.Spec.PodGroups[0].TopologyConstraint = &groveschedulerv1alpha1.TopologyConstraint{
+						PackConstraint: &groveschedulerv1alpha1.TopologyPackConstraint{Required: ptr.To("kubernetes.io/hostname")},
+					}
+					constraint := tt.selectConstraint(podGang)
+					if !required {
+						constraint.PackConstraint.Required = nil
+					}
+					expected, err := buildWorkloadForPodGang(podGang, nil)
+					require.NoError(t, err)
+					constraint.PackConstraint.Preferred = ptr.To("kubernetes.io/hostname")
+
+					backend, cl := newGangBackend(t, podGang)
+					recorder := record.NewFakeRecorder(10)
+					backend.eventRecorder = recorder
+					require.NoError(t, backend.SyncPodGang(t.Context(), podGang))
+
+					workload := &schedulingv1beta1.Workload{}
+					require.NoError(t, cl.Get(t.Context(), client.ObjectKeyFromObject(podGang), workload))
+					assert.Equal(t, expected.Spec, workload.Spec, "ignoring preferred must not discard required constraints")
+					composites := &schedulingv1alpha3.CompositePodGroupList{}
+					require.NoError(t, cl.List(t.Context(), composites))
+					require.Len(t, composites.Items, 2)
+					for _, group := range composites.Items {
+						expectedTopology := compositeTopology(expected.Spec.CompositePodGroupTemplates[0].SchedulingConstraints)
+						if group.Name != podGang.Name {
+							expectedTopology = compositeTopology(expected.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates[0].SchedulingConstraints)
+						}
+						if len(expectedTopology) == 0 {
+							assert.Nil(t, group.Spec.SchedulingConstraints)
+						} else {
+							require.NotNil(t, group.Spec.SchedulingConstraints)
+							require.Len(t, group.Spec.SchedulingConstraints.Topology, 1)
+							assert.Equal(t, expectedTopology[0].Key, group.Spec.SchedulingConstraints.Topology[0].Key)
+						}
+					}
+					leaf := &schedulingv1beta1.PodGroup{}
+					require.NoError(t, cl.Get(t.Context(), client.ObjectKey{Namespace: podGang.Namespace, Name: podGang.Spec.PodGroups[0].Name}, leaf))
+					expectedLeaf := findLeafTemplate(expected.Spec.CompositePodGroupTemplates, nil, leafTemplateName(leaf.Name))
+					require.NotNil(t, expectedLeaf)
+					assert.Equal(t, expectedLeaf.SchedulingConstraints, leaf.Spec.SchedulingConstraints)
+					require.Len(t, recorder.Events, 1)
+					assert.Equal(t, "Warning KubeBackendPreferredTopologyIgnored default-scheduler gang scheduling ignores preferred topology constraints; required constraints remain enforced", <-recorder.Events)
+				})
+			}
 		})
 	}
 }
@@ -1013,5 +1068,18 @@ func TestSyncPodGang_RequeuesConcurrentSchedulingUpdates(t *testing.T) {
 			require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "test-pcs-0-prefill"}, leaf))
 			assert.Equal(t, int32(3), leaf.Spec.SchedulingPolicy.Gang.MinCount)
 		})
+	}
+}
+
+func withTemplateLists(leaves, composites int) func(*groveschedulerv1alpha1.PodGang) {
+	return func(podGang *groveschedulerv1alpha1.PodGang) {
+		podGang.Spec.PodGroups = nil
+		for i := 0; i < leaves+composites; i++ {
+			name := fmt.Sprintf("clique-%d", i)
+			podGang.Spec.PodGroups = append(podGang.Spec.PodGroups, groveschedulerv1alpha1.PodGroup{Name: name, MinReplicas: 1})
+			if i < composites {
+				withTopologyGroup(fmt.Sprintf("group-%d", i), []string{name}, "")(podGang)
+			}
+		}
 	}
 }

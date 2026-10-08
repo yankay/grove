@@ -85,13 +85,7 @@ From `operator/`, run against the dedicated kubeconfig:
 KUBECONFIG=/path/to/was-kubeconfig make run-e2e TEST_PATTERN='^Test_WAS[123]_'
 ```
 
-With such a cluster, `Test_WAS1/2/3` verify the
-generated Workload hierarchy, cross-group gang holding, Pod-derived PodGang
-conditions before and after scheduling, and the preferred-topology fail-closed
-path against the real scheduler. The tests enable the operator's
-`default-scheduler` gang profile through Helm, including its conditional RBAC.
-Use a dedicated test cluster because this changes the installed operator
-configuration.
+With such a cluster, `Test_WAS1/2/3` verify the generated Workload hierarchy, cross-group gang holding, Pod-derived PodGang conditions before and after scheduling, and warning-only handling of preferred topology while required topology remains enforced. The tests enable Grove's topology-aware scheduling and the `default-scheduler` gang profile through Helm, including its conditional RBAC. Use a dedicated test cluster because this changes the installed operator configuration.
 
 API-server integration tests also cover startup with missing WAS capabilities
 and owner-watch recovery after deleting generated objects. They do not start

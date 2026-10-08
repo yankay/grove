@@ -21,7 +21,11 @@ import (
 	schedulertest "github.com/ai-dynamo/grove/operator/test/utils/scheduler"
 
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -67,4 +71,26 @@ func TestBackend_InitWithWorkloadAPIs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSyncPodGang_TemplateListLimitsWithWorkloadAPIs(t *testing.T) {
+	config := schedulertest.StartWorkloadEnvtest(t, "GenericWorkload=true,CompositePodGroup=true,TopologyAwareWorkloadScheduling=true")
+	scheme := newWorkloadTestScheme(t)
+	require.NoError(t, corev1.AddToScheme(scheme))
+	directClient, err := client.New(config, client.Options{Scheme: scheme})
+	require.NoError(t, err)
+	require.NoError(t, directClient.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNamespace}}))
+	backend := New(directClient, scheme, nil, configv1alpha1.SchedulerProfile{
+		Name:   configv1alpha1.SchedulerNameKube,
+		Config: &runtime.RawExtension{Raw: []byte(`{"gangScheduling":true}`)},
+	})
+	require.NoError(t, backend.Init(directClient))
+	podGang := newTestPodGang(withTemplateLists(8, 8))
+	require.NoError(t, backend.SyncPodGang(t.Context(), podGang))
+	composites := &schedulingv1alpha3.CompositePodGroupList{}
+	require.NoError(t, directClient.List(t.Context(), composites, client.InNamespace(testNamespace)))
+	require.Len(t, composites.Items, 9)
+	leaves := &schedulingv1beta1.PodGroupList{}
+	require.NoError(t, directClient.List(t.Context(), leaves, client.InNamespace(testNamespace)))
+	require.Len(t, leaves.Items, 16)
 }

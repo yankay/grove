@@ -80,6 +80,25 @@ func TestGroveConfigToHelmValuesIncludesSchedulerConfig(t *testing.T) {
 	assert.Equal(t, true, config["gangScheduling"])
 }
 
+func TestGroveConfigToHelmValuesTopologyAwareScheduling(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		values, err := (&GroveConfig{
+			TopologyAwareScheduling: &configv1alpha1.TopologyAwareSchedulingConfiguration{Enabled: enabled},
+		}).toHelmValues()
+		require.NoError(t, err)
+		actual, found, err := unstructured.NestedBool(values, "config", "topologyAwareScheduling", "enabled")
+		require.NoError(t, err)
+		require.True(t, found)
+		assert.Equal(t, enabled, actual)
+	}
+
+	values, err := (&GroveConfig{}).toHelmValues()
+	require.NoError(t, err)
+	_, found, err := unstructured.NestedMap(values, "config", "topologyAwareScheduling")
+	require.NoError(t, err)
+	assert.False(t, found, "omitting topology configuration must preserve existing Helm values")
+}
+
 func TestWaitForWebhookReadyRequiresConsecutiveSuccesses(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -18,17 +18,19 @@ package tests
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/e2e/grove/podgang"
+	"github.com/ai-dynamo/grove/operator/e2e/grove/topology"
 	"github.com/ai-dynamo/grove/operator/e2e/setup"
 	"github.com/ai-dynamo/grove/operator/e2e/testctx"
+	"github.com/ai-dynamo/grove/operator/e2e/waiter"
 
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -76,6 +78,7 @@ func enableWASGangScheduling(t *testing.T, tc *testctx.TestContext) {
 			tc.Client.RestConfig,
 			chartDir,
 			&setup.GroveConfig{
+				TopologyAwareScheduling: &configv1alpha1.TopologyAwareSchedulingConfiguration{Enabled: true},
 				Scheduler: &configv1alpha1.SchedulerConfiguration{
 					DefaultProfileName: string(configv1alpha1.SchedulerNameKube),
 					Profiles: []configv1alpha1.SchedulerProfile{
@@ -318,42 +321,74 @@ func Test_WAS2_GangHeldWhenInsufficientResources(t *testing.T) {
 	Logger.Info("🎉 WAS-2 gang-held-on-insufficient-resources test completed successfully!")
 }
 
-// Test_WAS3_PreferredTopologyRejected is a negative-path (adversarial) test:
-// the Kubernetes Workload-Aware Scheduling APIs only support required topology
-// constraints, so a default-scheduler PodCliqueSet requesting a preferred
-// topology constraint must be rejected by the validating webhook (fail closed).
-//
-// Scenario WAS-3:
-// 1. Initialize a Grove cluster with the Workload-Aware Scheduling APIs served
-// 2. Apply a default-scheduler PodCliqueSet with a preferred topology constraint
-// 3. Verify the apply is rejected and no PodGang / Workload objects are created
-func Test_WAS3_PreferredTopologyRejected(t *testing.T) {
+// Test_WAS3_PreferredTopologyIgnored verifies that preferred topology produces
+// a warning without preventing scheduling or dropping the required constraint.
+func Test_WAS3_PreferredTopologyIgnored(t *testing.T) {
 	ctx := context.Background()
+	const expectedPods = 2
 
 	Logger.Info("1. Initialize a Grove cluster (requires the Workload-Aware Scheduling APIs)")
 	tc, cleanup := testctx.PrepareTest(ctx, t, 1,
 		testctx.WithWorkload(&testctx.WorkloadConfig{
-			Name:         "was-preferred-reject",
-			YAMLPath:     "../yaml/was-preferred-reject.yaml",
+			Name:         "was-preferred",
+			YAMLPath:     "../yaml/was-preferred.yaml",
 			Namespace:    "default",
-			ExpectedPods: 0,
+			ExpectedPods: expectedPods,
 		}),
 	)
 	defer cleanup()
 
 	skipUnlessWASServed(t, tc)
 	enableWASGangScheduling(t, tc)
+	topologyVerifier := topology.NewTopologyVerifier(tc.Client, Logger)
+	ensureGroveTopology(ctx, t, topologyVerifier)
 
-	Logger.Info("2. Apply a default-scheduler PodCliqueSet with a preferred topology constraint")
-	_, err := tc.ApplyYAMLFile(tc.Workload.YAMLPath)
-
-	Logger.Info("3. Verify the apply is rejected with a fail-closed validation error")
-	if err == nil {
-		t.Fatalf("expected the PodCliqueSet with a preferred topology constraint to be rejected, but the apply succeeded")
+	Logger.Info("2. Deploy a PodCliqueSet with required rack and preferred host constraints")
+	pods, err := DeployWorkloadAndGetPods(tc, expectedPods)
+	if err != nil {
+		t.Fatalf("failed to deploy workload with preferred topology: %v", err)
 	}
-	if !strings.Contains(err.Error(), "preferred topology") {
-		t.Fatalf("expected a preferred-topology rejection error, got: %v", err)
+	if err := topologyVerifier.VerifyPodsInSameTopologyDomain(ctx, pods, setup.TopologyLabelRack); err != nil {
+		t.Fatalf("required rack topology was not enforced: %v", err)
+	}
+	podGangs, err := podgang.NewVerifier(tc.Client, Logger).List(ctx,
+		client.ObjectKey{Namespace: tc.Namespace, Name: tc.Workload.Name})
+	if err != nil {
+		t.Fatalf("failed to list PodGangs: %v", err)
+	}
+	if len(podGangs) != 1 {
+		t.Fatalf("expected exactly one PodGang, got %d", len(podGangs))
+	}
+	gang := &podGangs[0]
+	root := &schedulingv1alpha3.CompositePodGroup{}
+	if err := tc.Client.Get(ctx, client.ObjectKeyFromObject(gang), root); err != nil {
+		t.Fatalf("failed to get root CompositePodGroup: %v", err)
+	}
+	if root.Spec.SchedulingConstraints == nil ||
+		len(root.Spec.SchedulingConstraints.Topology) != 1 ||
+		root.Spec.SchedulingConstraints.Topology[0].Key != setup.TopologyLabelRack {
+		t.Fatalf("expected only the required rack constraint, got %+v", root.Spec.SchedulingConstraints)
 	}
 
-	Logger.Info("🎉 WAS-3 preferred-topology-rejected test completed successfully!")
+	Logger.Info("3. Verify the PodGang warning identifies the ignored preferred constraint")
+	err = waiter.New[*corev1.EventList]().
+		WithTimeout(tc.Timeout).
+		WithInterval(tc.Interval).
+		WaitUntil(ctx, func(ctx context.Context) (*corev1.EventList, error) {
+			events := &corev1.EventList{}
+			err := tc.Client.List(ctx, events, client.InNamespace(tc.Namespace),
+				client.MatchingFields{"involvedObject.uid": string(gang.UID)})
+			return events, err
+		}, func(events *corev1.EventList) bool {
+			for _, event := range events.Items {
+				if event.Type == corev1.EventTypeWarning && event.Reason == "KubeBackendPreferredTopologyIgnored" {
+					return true
+				}
+			}
+			return false
+		})
+	if err != nil {
+		t.Fatalf("expected a preferred-topology warning on PodGang %s: %v", gang.Name, err)
+	}
+	Logger.Info("WAS-3 preferred-topology-ignored test completed successfully")
 }

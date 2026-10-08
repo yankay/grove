@@ -163,32 +163,26 @@ func TestValidatePodCliqueSet_NoOpWithoutGangScheduling(t *testing.T) {
 	require.NoError(t, b.ValidatePodCliqueSet(context.Background(), pcs))
 }
 
-// TestValidatePodCliqueSet_RejectsPreferred verifies preferred topology
-// constraints fail closed at every level, while required constraints pass.
-func TestValidatePodCliqueSet_RejectsPreferred(t *testing.T) {
+func TestValidatePodCliqueSet_AcceptsTopologyConstraints(t *testing.T) {
 	tests := []struct {
-		name        string
-		mutate      func(*grovecorev1alpha1.PodCliqueSet)
-		wantErrPart string
+		name   string
+		mutate func(*grovecorev1alpha1.PodCliqueSet)
 	}{
 		{
-			name:        "no constraints",
-			mutate:      func(*grovecorev1alpha1.PodCliqueSet) {},
-			wantErrPart: "",
+			name:   "no constraints",
+			mutate: func(*grovecorev1alpha1.PodCliqueSet) {},
 		},
 		{
 			name: "required on PodCliqueSet",
 			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
 				pcs.Spec.Template.TopologyConstraint = requiredConstraint()
 			},
-			wantErrPart: "",
 		},
 		{
 			name: "preferred on PodCliqueSet",
 			mutate: func(pcs *grovecorev1alpha1.PodCliqueSet) {
 				pcs.Spec.Template.TopologyConstraint = preferredConstraint()
 			},
-			wantErrPart: "PodCliqueSet",
 		},
 		{
 			name: "preferred on PodCliqueScalingGroup",
@@ -197,7 +191,6 @@ func TestValidatePodCliqueSet_RejectsPreferred(t *testing.T) {
 					{Name: "sg-a", TopologyConstraint: preferredConstraint()},
 				}
 			},
-			wantErrPart: "PodCliqueScalingGroup",
 		},
 		{
 			name: "preferred on PodClique",
@@ -206,7 +199,6 @@ func TestValidatePodCliqueSet_RejectsPreferred(t *testing.T) {
 					{Name: "clique-a", TopologyConstraint: preferredConstraint()},
 				}
 			},
-			wantErrPart: "PodClique",
 		},
 	}
 	b := &schedulerBackend{gangSchedulingEnabled: true}
@@ -214,13 +206,7 @@ func TestValidatePodCliqueSet_RejectsPreferred(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			pcs := &grovecorev1alpha1.PodCliqueSet{ObjectMeta: metav1.ObjectMeta{Name: "pcs"}}
 			tt.mutate(pcs)
-			err := b.ValidatePodCliqueSet(context.Background(), pcs)
-			if tt.wantErrPart == "" {
-				require.NoError(t, err)
-				return
-			}
-			require.Error(t, err)
-			assert.ErrorContains(t, err, tt.wantErrPart)
+			require.NoError(t, b.ValidatePodCliqueSet(context.Background(), pcs))
 		})
 	}
 }

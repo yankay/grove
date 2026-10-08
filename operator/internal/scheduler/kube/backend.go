@@ -158,6 +158,7 @@ func (b *schedulerBackend) SyncPodGang(ctx context.Context, podGang *groveschedu
 	if podGang == nil {
 		return fmt.Errorf("podGang is nil")
 	}
+	b.warnPreferredTopologyConstraints(podGang)
 	if err := b.syncWorkloadHierarchy(ctx, podGang); err != nil {
 		b.recordWarning(podGang, "KubeBackendSyncFailed", err)
 		return err
@@ -183,36 +184,27 @@ func (b *schedulerBackend) PreparePod(pod *corev1.Pod) error {
 	return nil
 }
 
-// ValidatePodCliqueSet runs default-scheduler-specific validations on the PodCliqueSet.
-// With gang scheduling enabled, mappings unsupported by the upstream
-// Workload-Aware Scheduling APIs are rejected (fail closed): preferred
-// topology constraints are not supported, only required ones.
-func (b *schedulerBackend) ValidatePodCliqueSet(_ context.Context, pcs *grovecorev1alpha1.PodCliqueSet) error {
-	if !b.gangSchedulingEnabled {
-		return nil
-	}
-	if hasPreferredDomain(pcs.Spec.Template.TopologyConstraint) {
-		return fmt.Errorf("default-scheduler gang scheduling does not support preferred topology constraints on PodCliqueSet %s; only required constraints are supported", pcs.Name)
-	}
-	for _, scalingGroup := range pcs.Spec.Template.PodCliqueScalingGroupConfigs {
-		if hasPreferredDomain(scalingGroup.TopologyConstraint) {
-			return fmt.Errorf("default-scheduler gang scheduling does not support preferred topology constraints on PodCliqueScalingGroup %q; only required constraints are supported", scalingGroup.Name)
-		}
-	}
-	for _, clique := range pcs.Spec.Template.Cliques {
-		if clique == nil {
-			continue
-		}
-		if hasPreferredDomain(clique.TopologyConstraint) {
-			return fmt.Errorf("default-scheduler gang scheduling does not support preferred topology constraints on PodClique %q; only required constraints are supported", clique.Name)
-		}
-	}
+// ValidatePodCliqueSet accepts preferred topology constraints. Reconciliation
+// warns when ignoring them and continues to enforce required constraints.
+func (b *schedulerBackend) ValidatePodCliqueSet(_ context.Context, _ *grovecorev1alpha1.PodCliqueSet) error {
 	return nil
 }
 
-// hasPreferredDomain reports whether the constraint carries a preferred pack domain.
-func hasPreferredDomain(topologyConstraint *grovecorev1alpha1.TopologyConstraint) bool {
-	return topologyConstraint != nil && topologyConstraint.PreferredDomain() != ""
+func (b *schedulerBackend) warnPreferredTopologyConstraints(podGang *groveschedulerv1alpha1.PodGang) {
+	constraints := []*groveschedulerv1alpha1.TopologyConstraint{podGang.Spec.TopologyConstraint}
+	for _, group := range podGang.Spec.TopologyConstraintGroupConfigs {
+		constraints = append(constraints, group.TopologyConstraint)
+	}
+	for _, group := range podGang.Spec.PodGroups {
+		constraints = append(constraints, group.TopologyConstraint)
+	}
+	for _, constraint := range constraints {
+		if constraint != nil && constraint.PackConstraint != nil && constraint.PackConstraint.Preferred != nil {
+			b.recordWarning(podGang, "KubeBackendPreferredTopologyIgnored",
+				fmt.Errorf("default-scheduler gang scheduling ignores preferred topology constraints; required constraints remain enforced"))
+			return
+		}
+	}
 }
 
 // recordWarning emits a warning event on the object when a recorder is configured.
