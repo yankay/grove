@@ -24,6 +24,7 @@ import (
 
 	"github.com/samber/lo"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -88,6 +89,87 @@ func PodGangNameForPCSGReplica(pgm *grovecorev1alpha1.PodGangMap, rnr apicommon.
 	return apicommon.GenerateNonAnchorPodGangName(rnr, entry.Epoch, pcsgName, pcsgReplicaIndex), nil
 }
 
+// IsPodGangEntryEmpty reports whether an entry has no active members.
+func IsPodGangEntryEmpty(entry grovecorev1alpha1.PodGangEntry) bool {
+	for _, count := range entry.PodCliques {
+		if count > 0 {
+			return false
+		}
+	}
+	for _, indices := range entry.PCSGReplicaIndices {
+		if len(indices) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// ActivePodCliqueNamesForPodGang returns the PodClique FQNs materialized in podGangName.
+func ActivePodCliqueNamesForPodGang(pcs *grovecorev1alpha1.PodCliqueSet, pgm *grovecorev1alpha1.PodGangMap, rnr apicommon.ResourceNameReplica, podGangName string) (sets.Set[string], error) {
+	for i := range pgm.Spec.Entries {
+		entry := &pgm.Spec.Entries[i]
+		if entry.Role == grovecorev1alpha1.PodGangEntryRoleAnchor {
+			if apicommon.GenerateAnchorPodGangName(rnr, entry.Epoch) == podGangName {
+				return ActivePodCliqueNamesForEntry(pcs, rnr, entry)
+			}
+			continue
+		}
+		for pcsgName, indices := range entry.PCSGReplicaIndices {
+			for _, index := range indices {
+				if apicommon.GenerateNonAnchorPodGangName(rnr, entry.Epoch, pcsgName, index) != podGangName {
+					continue
+				}
+				pcsgConfig, ok := lo.Find(pcs.Spec.Template.PodCliqueScalingGroupConfigs, func(config grovecorev1alpha1.PodCliqueScalingGroupConfig) bool {
+					return config.Name == pcsgName
+				})
+				if !ok {
+					return nil, fmt.Errorf("PodGangMap %s references unknown PodCliqueScalingGroup %q", pgm.Name, pcsgName)
+				}
+				return podCliqueNamesForPCSGReplica(rnr, pcsgConfig, index), nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("PodGang %q is not materialized by PodGangMap %s", podGangName, pgm.Name)
+}
+
+// ActivePodCliqueNamesForEntry resolves and validates every active member in an entry.
+func ActivePodCliqueNamesForEntry(pcs *grovecorev1alpha1.PodCliqueSet, rnr apicommon.ResourceNameReplica, entry *grovecorev1alpha1.PodGangEntry) (sets.Set[string], error) {
+	names := sets.New[string]()
+	standaloneSet, _ := GetExpectedPCLQNamesGroupByOwner(pcs)
+	for cliqueName, replicas := range entry.PodCliques {
+		if replicas <= 0 {
+			continue
+		}
+		if !standaloneSet.Has(cliqueName) {
+			return nil, fmt.Errorf("PodGangMap entry %q references unknown standalone PodClique %q", entry.Epoch, cliqueName)
+		}
+		names[apicommon.GeneratePodCliqueName(rnr, cliqueName)] = struct{}{}
+	}
+	for pcsgName, indices := range entry.PCSGReplicaIndices {
+		config, ok := lo.Find(pcs.Spec.Template.PodCliqueScalingGroupConfigs, func(config grovecorev1alpha1.PodCliqueScalingGroupConfig) bool {
+			return config.Name == pcsgName
+		})
+		if !ok {
+			return nil, fmt.Errorf("PodGangMap entry %q references unknown PodCliqueScalingGroup %q", entry.Epoch, pcsgName)
+		}
+		for _, index := range indices {
+			for name := range podCliqueNamesForPCSGReplica(rnr, config, index) {
+				names[name] = struct{}{}
+			}
+		}
+	}
+	return names, nil
+}
+
+func podCliqueNamesForPCSGReplica(rnr apicommon.ResourceNameReplica, config grovecorev1alpha1.PodCliqueScalingGroupConfig, index int32) sets.Set[string] {
+	pcsgName := apicommon.GeneratePodCliqueScalingGroupName(rnr, config.Name)
+	names := make(sets.Set[string], len(config.CliqueNames))
+	for _, cliqueName := range config.CliqueNames {
+		names[apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{Name: pcsgName, Replica: int(index)}, cliqueName)] = struct{}{}
+	}
+	return names
+}
+
 // DependsOnForEpoch returns the epochs that the PodGangMap entry with the given epoch depends on
 // before its pods may be scheduled. An empty result means the entry has no scheduling dependency. It
 // returns an error when no entry carries the epoch, which the caller treats as requeue-worthy rather
@@ -102,30 +184,17 @@ func DependsOnForEpoch(pgm *grovecorev1alpha1.PodGangMap, epoch string) ([]strin
 }
 
 // podGangEntryForPCSGReplica returns the PodGangMap entry that a PodCliqueScalingGroup replica index
-// belongs to. It first returns the entry whose PCSGReplicaIndices for pcsgName already contains the
-// index. When no entry has placed the index yet — the case for a scale-out replica whose index the
-// PodGangMap component has not appended to the ScaleOut entry in this reconcile pass — it returns the
-// pre-created ScaleOut entry, whose epoch every scale-out replica shares. It returns an error when
-// neither an owning entry nor a ScaleOut entry exists, which is a contract violation for a
-// PodCliqueScalingGroup-owned PodClique and must be requeued rather than resolved to an empty name.
+// belongs to. Missing placement is retried: guessing ScaleOut before the PodGangMap observes a
+// wake would permanently attach the minimum replicas to the wrong PodGang.
 // It does not filter by generation hash: a replica's PodGangMap holds a single generation's entries,
 // and during a rolling update only the under-update replica's entries advance, so a lagging replica
 // is resolved against its own entries.
 func podGangEntryForPCSGReplica(pgm *grovecorev1alpha1.PodGangMap, pcsgName string, pcsgReplicaIndex int32) (*grovecorev1alpha1.PodGangEntry, error) {
-	var scaleOut *grovecorev1alpha1.PodGangEntry
-	for i := range pgm.Spec.Entries {
-		entry := &pgm.Spec.Entries[i]
-		if lo.Contains(entry.PCSGReplicaIndices[pcsgName], pcsgReplicaIndex) {
-			return entry, nil
-		}
-		if entry.Role == grovecorev1alpha1.PodGangEntryRoleScaleOut {
-			scaleOut = entry
-		}
+	entry, err := FindPodGangEntryForPCSGReplica(pgm.Spec.Entries, "", pcsgName, pcsgReplicaIndex)
+	if err != nil || entry != nil {
+		return entry, err
 	}
-	if scaleOut != nil {
-		return scaleOut, nil
-	}
-	return nil, fmt.Errorf("no PodGangMap entry owns replica index %d of PodCliqueScalingGroup %q and no ScaleOut entry exists in PodGangMap %s", pcsgReplicaIndex, pcsgName, pgm.Name)
+	return nil, fmt.Errorf("no PodGangMap entry owns replica index %d of PodCliqueScalingGroup %q in PodGangMap %s", pcsgReplicaIndex, pcsgName, pgm.Name)
 }
 
 // BaseAnchorPodGangEpoch returns the epoch of the base anchor of the PodGangMap. The base anchor is the
@@ -173,6 +242,25 @@ func BaseAnchorEpoch(entries []grovecorev1alpha1.PodGangEntry, pcsGenerationHash
 		}
 	}
 	return lowestEpoch, found, nil
+}
+
+// FindPodGangEntryForPCSGReplica resolves exact membership, optionally within one generation.
+func FindPodGangEntryForPCSGReplica(entries []grovecorev1alpha1.PodGangEntry, generationHash, pcsgName string, replicaIndex int32) (*grovecorev1alpha1.PodGangEntry, error) {
+	var found *grovecorev1alpha1.PodGangEntry
+	for i := range entries {
+		entry := &entries[i]
+		if generationHash != "" && entry.PodCliqueSetGenerationHash != generationHash {
+			continue
+		}
+		if !lo.Contains(entry.PCSGReplicaIndices[pcsgName], replicaIndex) {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("PodCliqueScalingGroup %q replica index %d belongs to multiple PodGangMap entries", pcsgName, replicaIndex)
+		}
+		found = entry
+	}
+	return found, nil
 }
 
 // IndexPodGangEntriesByEpoch returns a map of the PodGangMap entries keyed by their epoch. Epoch is

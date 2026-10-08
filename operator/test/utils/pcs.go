@@ -21,6 +21,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 )
 
 // PodCliqueSetBuilder is a builder for PodCliqueSet objects.
@@ -86,7 +87,7 @@ func (b *PodCliqueSetBuilder) WithStandaloneClique(name string) *PodCliqueSetBui
 	cliqueSpec := &grovecorev1alpha1.PodCliqueTemplateSpec{
 		Name: name,
 		Spec: grovecorev1alpha1.PodCliqueSpec{
-			Replicas: 1,
+			Replicas: ptr.To[int32](1),
 		},
 	}
 	b.pcs.Spec.Template.Cliques = append(b.pcs.Spec.Template.Cliques, cliqueSpec)
@@ -98,7 +99,7 @@ func (b *PodCliqueSetBuilder) WithStandaloneCliqueReplicas(name string, replicas
 	cliqueSpec := &grovecorev1alpha1.PodCliqueTemplateSpec{
 		Name: name,
 		Spec: grovecorev1alpha1.PodCliqueSpec{
-			Replicas: replicas,
+			Replicas: ptr.To[int32](replicas),
 		},
 	}
 	b.pcs.Spec.Template.Cliques = append(b.pcs.Spec.Template.Cliques, cliqueSpec)
@@ -117,7 +118,7 @@ func (b *PodCliqueSetBuilder) WithScalingGroupConfig(name string, cliqueNames []
 		cliqueSpec := &grovecorev1alpha1.PodCliqueTemplateSpec{
 			Name: cliqueName,
 			Spec: grovecorev1alpha1.PodCliqueSpec{
-				Replicas: 1,
+				Replicas: ptr.To[int32](1),
 			},
 		}
 		b.pcs.Spec.Template.Cliques = append(b.pcs.Spec.Template.Cliques, cliqueSpec)

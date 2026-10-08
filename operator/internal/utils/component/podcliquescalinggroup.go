@@ -25,6 +25,7 @@ import (
 
 	"github.com/samber/lo"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -85,6 +86,52 @@ func GenerateDependencyNamesForBasePodGang(pcs *grovecorev1alpha1.PodCliqueSet, 
 		parentPCLQNames = append(parentPCLQNames, apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{Name: pcs.Name, Replica: pcsReplicaIndex}, parentCliqueName))
 	}
 	return parentPCLQNames
+}
+
+// StartupDependencies resolves in-order or explicit dependencies within the materialized PodGang.
+// The caller validates StartupType and supplies candidate names for its ownership scope.
+func StartupDependencies(pcs *grovecorev1alpha1.PodCliqueSet, foundAtIndex int, startsAfter []string, activePCLQNames sets.Set[string], candidates func(string) []string) []string {
+	activeDependencies := func(cliqueName string) []string {
+		return lo.Filter(lo.Uniq(candidates(cliqueName)), func(name string, _ int) bool {
+			return activePCLQNames.Has(name)
+		})
+	}
+	switch *pcs.Spec.Template.StartupType {
+	case grovecorev1alpha1.CliqueStartupTypeInOrder:
+		for index := foundAtIndex - 1; index >= 0; index-- {
+			if dependencies := activeDependencies(pcs.Spec.Template.Cliques[index].Name); len(dependencies) > 0 {
+				return dependencies
+			}
+		}
+	case grovecorev1alpha1.CliqueStartupTypeExplicit:
+		dependencies := make([]string, 0)
+		for _, cliqueName := range startsAfter {
+			dependencies = append(dependencies, activeDependencies(cliqueName)...)
+		}
+		return lo.Uniq(dependencies)
+	}
+	return nil
+}
+
+// GenerateDependencyNamesForEntries resolves candidates from committed placement rather than the
+// bootstrap minimum indices. Coherent updates can put any PCSG replica index in an anchor.
+// StartupDependencies filters these candidates to the target PodGang's active members.
+func GenerateDependencyNamesForEntries(pcs *grovecorev1alpha1.PodCliqueSet, pcsReplicaIndex int, cliqueName string, entries []grovecorev1alpha1.PodGangEntry) []string {
+	rnr := apicommon.ResourceNameReplica{Name: pcs.Name, Replica: pcsReplicaIndex}
+	group := FindScalingGroupConfigForClique(pcs.Spec.Template.PodCliqueScalingGroupConfigs, cliqueName)
+	if group == nil {
+		return []string{apicommon.GeneratePodCliqueName(rnr, cliqueName)}
+	}
+	indices := sets.New[int32]()
+	for _, entry := range entries {
+		indices.Insert(entry.PCSGReplicaIndices[group.Name]...)
+	}
+	groupName := apicommon.GeneratePodCliqueScalingGroupName(rnr, group.Name)
+	names := make([]string, 0, len(indices))
+	for _, index := range sets.List(indices) {
+		names = append(names, apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{Name: groupName, Replica: int(index)}, cliqueName))
+	}
+	return names
 }
 
 // GroupPCSGsByPCSReplicaIndex filters PCSGs that have a PodCliqueSetReplicaIndex label and groups them by the PCS replica index.

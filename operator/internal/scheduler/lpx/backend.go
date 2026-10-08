@@ -35,24 +35,53 @@ type schedulerBackend struct {
 	secondaryBackend scheduler.Backend
 }
 
+type resourceBackend struct {
+	*schedulerBackend
+	secondaryResource scheduler.PodGangResourceBackend
+}
+
 var (
 	errTopologyConstraintsUnsupported = errors.New(
 		"lpx-scheduler does not support Grove topology constraints; " +
 			"placement topology must be expressed through the LPX workload contract",
 	)
 
-	_ scheduler.Backend = (*schedulerBackend)(nil)
+	_ scheduler.Backend                = (*schedulerBackend)(nil)
+	_ scheduler.PodGangResourceBackend = (*resourceBackend)(nil)
 
 	resourcesLPX = []corev1.ResourceName{"lpu.nvidia.com/lpu", "nvidia.com/lpu"}
 )
 
 // New creates an LPX scheduler backend.
 func New(cl client.Client, profile configv1alpha1.SchedulerProfile, secondaryBackend scheduler.Backend) scheduler.Backend {
-	return &schedulerBackend{
+	backend := &schedulerBackend{
 		client:           cl,
 		name:             string(profile.Name),
 		secondaryBackend: secondaryBackend,
 	}
+	if secondaryResource, ok := secondaryBackend.(scheduler.PodGangResourceBackend); ok {
+		return &resourceBackend{schedulerBackend: backend, secondaryResource: secondaryResource}
+	}
+	return backend
+}
+
+func (b *resourceBackend) PodGangResource() client.Object {
+	return b.secondaryResource.PodGangResource()
+}
+
+func (b *resourceBackend) IsPodGangSynced(ctx context.Context, podGang *groveschedulerv1alpha1.PodGang) (bool, error) {
+	if podGang == nil {
+		return false, fmt.Errorf("podGang is nil")
+	}
+	fallback, err := b.fallbackPodGang(ctx, podGang)
+	if err != nil {
+		return false, err
+	}
+	// LPX-only gangs need no native policy after their fallback members drain.
+	if len(fallback.Spec.PodGroups) == 0 {
+		return true, nil
+	}
+	return b.secondaryResource.IsPodGangSynced(ctx, fallback)
 }
 
 // Name returns the pod-facing scheduler name (lpx-scheduler), for lookup and logging.

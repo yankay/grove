@@ -52,6 +52,16 @@ type Backend interface {
 	ValidatePodCliqueSet(ctx context.Context, pcs *grovecorev1alpha1.PodCliqueSet) error
 }
 
+// PodGangResourceBackend is implemented by backends that manage a child scheduling resource.
+// Controllers watch this resource for repair and keep new pods gated until its policy is in sync.
+type PodGangResourceBackend interface {
+	// PodGangResource returns a new, empty object of the managed child kind.
+	PodGangResource() client.Object
+	// IsPodGangSynced checks the current Grove-owned policy, not historical scheduling status.
+	// Missing or terminating children return false; API and mapping failures return an error.
+	IsPodGangSynced(ctx context.Context, podGang *groveschedulerv1alpha1.PodGang) (bool, error)
+}
+
 // TopologyAwareBackend is an optional interface that Backend
 // implementations may satisfy if they manage a scheduler-specific topology CRD.
 // The ClusterTopologyBinding controller type-asserts each registered backend to this

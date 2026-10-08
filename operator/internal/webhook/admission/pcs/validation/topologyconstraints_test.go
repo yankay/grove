@@ -28,6 +28,7 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -52,7 +53,7 @@ func TestValidateTASDisabledWithConstraints(t *testing.T) {
 				{
 					Name:               "worker",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainHost},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			errorMatchers: []testutils.ErrorMatcher{
@@ -79,12 +80,12 @@ func TestValidateTASDisabledWithConstraints(t *testing.T) {
 				{
 					Name:               "worker1",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainZone},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker1-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker1-role"},
 				},
 				{
 					Name:               "worker2",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainHost},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker2-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker2-role"},
 				},
 			},
 			pcsgConfigs: []grovecorev1alpha1.PodCliqueScalingGroupConfig{
@@ -145,7 +146,7 @@ func TestValidateTASEnabledWhenDomainNotInClusterTopology(t *testing.T) {
 				{
 					Name:               "worker",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainNuma},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			errorMatchers: []testutils.ErrorMatcher{
@@ -172,7 +173,7 @@ func TestValidateTASEnabledWhenDomainNotInClusterTopology(t *testing.T) {
 				{
 					Name:               "worker",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainZone},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			errorMatchers: []testutils.ErrorMatcher{},
@@ -187,7 +188,7 @@ func TestValidateTASEnabledWhenDomainNotInClusterTopology(t *testing.T) {
 				{
 					Name:               "worker",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainZone},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			errorMatchers: []testutils.ErrorMatcher{
@@ -206,7 +207,7 @@ func TestValidateTASEnabledWhenDomainNotInClusterTopology(t *testing.T) {
 				{
 					Name:               "worker",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainNuma},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			errorMatchers: []testutils.ErrorMatcher{
@@ -249,7 +250,7 @@ func TestValidateHierarchyViolations(t *testing.T) {
 				{
 					Name:               "worker",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainHost},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			errorMatchers: []testutils.ErrorMatcher{},
@@ -261,7 +262,7 @@ func TestValidateHierarchyViolations(t *testing.T) {
 				{
 					Name:               "worker",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainZone},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			errorMatchers: []testutils.ErrorMatcher{
@@ -288,7 +289,7 @@ func TestValidateHierarchyViolations(t *testing.T) {
 				{
 					Name:               "worker",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainZone},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			pcsgConfigs: []grovecorev1alpha1.PodCliqueScalingGroupConfig{
@@ -309,7 +310,7 @@ func TestValidateHierarchyViolations(t *testing.T) {
 				{
 					Name:               "worker",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainZone},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			errorMatchers: []testutils.ErrorMatcher{},
@@ -321,12 +322,12 @@ func TestValidateHierarchyViolations(t *testing.T) {
 				{
 					Name:               "worker1",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainZone},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker1-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker1-role"},
 				},
 				{
 					Name:               "worker2",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: grovecorev1alpha1.TopologyDomainRack},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker2-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker2-role"},
 				},
 			},
 			pcsgConfigs: []grovecorev1alpha1.PodCliqueScalingGroupConfig{
@@ -425,7 +426,7 @@ func TestValidateHierarchyWithCustomDomains(t *testing.T) {
 				{
 					Name:               "worker",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: "host"},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			errorMatchers: []testutils.ErrorMatcher{},
@@ -437,7 +438,7 @@ func TestValidateHierarchyWithCustomDomains(t *testing.T) {
 				{
 					Name:               "worker",
 					TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: "datacenter"},
-					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec:               grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			errorMatchers: []testutils.ErrorMatcher{
@@ -471,10 +472,10 @@ func TestValidateUpdateTopologyConstraintImmutability(t *testing.T) {
 	region := grovecorev1alpha1.TopologyDomainRegion
 
 	workerWithHost := []*grovecorev1alpha1.PodCliqueTemplateSpec{
-		{Name: "worker", TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: host}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"}},
+		{Name: "worker", TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: host}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"}},
 	}
 	workerWithZone := []*grovecorev1alpha1.PodCliqueTemplateSpec{
-		{Name: "worker", TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: zone}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"}},
+		{Name: "worker", TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: zone}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"}},
 	}
 
 	tests := []struct {
@@ -582,13 +583,13 @@ func TestValidateUpdateTopologyConstraintImmutability(t *testing.T) {
 			name:             "Should disallow when multiple constraint are changed",
 			oldPCSConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: region},
 			oldCliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{
-				{Name: "worker1", TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: zone}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker1-role"}},
-				{Name: "worker2", TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: rack}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker2-role"}},
+				{Name: "worker1", TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: zone}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker1-role"}},
+				{Name: "worker2", TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: rack}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker2-role"}},
 			},
 			newPCSConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: zone},
 			newCliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{
-				{Name: "worker1", TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: rack}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker1-role"}},
-				{Name: "worker2", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker2-role"}},
+				{Name: "worker1", TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{PackDomain: rack}, Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker1-role"}},
+				{Name: "worker2", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker2-role"}},
 			},
 			errorMatchers: []testutils.ErrorMatcher{
 				{ErrorType: field.ErrorTypeForbidden, Field: "spec.template.topologyConstraint"},
@@ -816,7 +817,7 @@ func TestResolveTopologyDomains(t *testing.T) {
 						TopologyName: "my-topo",
 						PackDomain:   "host",
 					},
-					Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			clusterTopologyObjects: []client.Object{
@@ -848,7 +849,7 @@ func TestResolveTopologyDomains(t *testing.T) {
 						TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{
 							PackDomain: "host",
 						},
-						Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+						Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 					}).
 					Build()
 			},
@@ -877,14 +878,14 @@ func TestResolveTopologyDomains(t *testing.T) {
 						TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{
 							PackDomain: "host",
 						},
-						Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "standalone-role"},
+						Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "standalone-role"},
 					}).
 					WithPodCliqueTemplateSpec(&grovecorev1alpha1.PodCliqueTemplateSpec{
 						Name: "grouped",
 						TopologyConstraint: &grovecorev1alpha1.TopologyConstraint{
 							PackDomain: "host",
 						},
-						Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "grouped-role"},
+						Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "grouped-role"},
 					}).
 					WithPodCliqueScalingGroupConfig(grovecorev1alpha1.PodCliqueScalingGroupConfig{
 						Name:        "workers",
@@ -936,7 +937,7 @@ func TestResolveTopologyDomains(t *testing.T) {
 						TopologyName: "my-topo",
 						PackDomain:   "host",
 					},
-					Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			clusterTopologyObjects: []client.Object{
@@ -964,7 +965,7 @@ func TestResolveTopologyDomains(t *testing.T) {
 						TopologyName: "other-topo",
 						PackDomain:   "host",
 					},
-					Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 1, RoleName: "worker-role"},
+					Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: ptr.To[int32](1), RoleName: "worker-role"},
 				},
 			},
 			clusterTopologyObjects: []client.Object{},

@@ -25,6 +25,7 @@ import (
 	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -105,7 +106,7 @@ func (p *subStepPlanner) heldEntries() []grovecorev1alpha1.PodGangEntry {
 // engine keeps draining them.
 func advanceFullyDrainedEntries(entries []grovecorev1alpha1.PodGangEntry, pcsCurrentGenerationHash string, mvu *mvuTemplate) []grovecorev1alpha1.PodGangEntry {
 	for i := range entries {
-		if entries[i].PodCliqueSetGenerationHash == pcsCurrentGenerationHash || isPodGangEntryEmpty(entries[i]) || entryHoldsInScopeContent(entries[i], mvu) {
+		if entries[i].PodCliqueSetGenerationHash == pcsCurrentGenerationHash || componentutils.IsPodGangEntryEmpty(entries[i]) || entryHoldsInScopeContent(entries[i], mvu) {
 			continue
 		}
 		entries[i].PodCliqueSetGenerationHash = pcsCurrentGenerationHash
@@ -154,7 +155,7 @@ func (s *syncSnapshot) computeDesiredReplicas(
 	desiredReplicas := make(map[string]int32, len(s.mvuTemplate.standalonePCLQs)+len(s.mvuTemplate.pcsgs))
 	for componentName := range s.mvuTemplate.standalonePCLQs {
 		if pclq, ok := standalonePCLQByComponent[componentName]; ok {
-			desiredReplicas[componentName] = pclq.Spec.Replicas
+			desiredReplicas[componentName] = ptr.Deref(pclq.Spec.Replicas, 1)
 		} else {
 			desiredReplicas[componentName] = standaloneTemplateReplicas[componentName]
 		}

@@ -105,6 +105,21 @@ func (s *FakeSchedulerBackend) ValidatePodCliqueSet(_ context.Context, _ *grovec
 	return nil
 }
 
+// FakePodGangResourceBackend exposes a controllable native policy handoff for controller tests.
+type FakePodGangResourceBackend struct {
+	scheduler.Backend
+	Synced bool
+	Err    error
+}
+
+// PodGangResource returns a stand-in child resource kind for watch tests.
+func (s *FakePodGangResourceBackend) PodGangResource() client.Object { return &corev1.ConfigMap{} }
+
+// IsPodGangSynced returns the configured policy handoff result.
+func (s *FakePodGangResourceBackend) IsPodGangSynced(context.Context, *groveschedulerv1alpha1.PodGang) (bool, error) {
+	return s.Synced, s.Err
+}
+
 // NewFakeTopologyAwareBackend creates a FakeSchedulerBackend that also satisfies scheduler.TopologyAwareBackend.
 func NewFakeTopologyAwareBackend(name string) *FakeTopologyAwareBackend {
 	return &FakeTopologyAwareBackend{FakeSchedulerBackend: FakeSchedulerBackend{name: name}}

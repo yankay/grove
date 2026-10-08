@@ -49,7 +49,7 @@ type replicasSpec struct {
 //
 // target is an empty PodClique or PodCliqueScalingGroup that the stored resource is fetched into, and its
 // concrete type selects the guarded kind.
-func Handle(ctx context.Context, req admission.Request, cl client.Client, logger logr.Logger, target client.Object) admission.Response {
+func Handle(ctx context.Context, req admission.Request, cl client.Reader, logger logr.Logger, target client.Object) admission.Response {
 	if req.Operation != admissionv1.Update {
 		return admission.Allowed("only spec.replicas changes are validated")
 	}
@@ -93,7 +93,7 @@ func requestReplicas(raw []byte) (int32, error) {
 // the template is at a newer revision, so scaling is blocked on every replica for the duration of the
 // update. The change is admitted when the owning PodCliqueSet cannot be resolved so recovery stays
 // unblocked, and when no coherent update is in progress.
-func denyReplicasChangeDuringCoherentUpdate(ctx context.Context, cl client.Client, logger logr.Logger, target client.Object) admission.Response {
+func denyReplicasChangeDuringCoherentUpdate(ctx context.Context, cl client.Reader, logger logr.Logger, target client.Object) admission.Response {
 	// Get the parent PodCliqueSet resource.
 	objectMeta := metav1.ObjectMeta{Name: target.GetName(), Namespace: target.GetNamespace(), Labels: target.GetLabels()}
 	pcs, err := componentutils.GetPodCliqueSet(ctx, cl, objectMeta)

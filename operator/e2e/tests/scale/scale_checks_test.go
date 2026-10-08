@@ -34,6 +34,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -355,11 +356,11 @@ func checkPodCliqueStatusConvergence(pclqList *grovecorev1alpha1.PodCliqueList) 
 		if og := pclq.Status.ObservedGeneration; og == nil || *og != pclq.Generation {
 			return fmt.Errorf("PodClique %s ObservedGeneration = %v, want %d", pclq.Name, og, pclq.Generation)
 		}
-		if pclq.Status.ReadyReplicas != pclq.Spec.Replicas {
-			return fmt.Errorf("PodClique %s ReadyReplicas = %d, want %d", pclq.Name, pclq.Status.ReadyReplicas, pclq.Spec.Replicas)
+		if pclq.Status.ReadyReplicas != ptr.Deref(pclq.Spec.Replicas, 1) {
+			return fmt.Errorf("PodClique %s ReadyReplicas = %d, want %d", pclq.Name, pclq.Status.ReadyReplicas, ptr.Deref(pclq.Spec.Replicas, 1))
 		}
-		if pclq.Status.UpdatedReplicas != pclq.Spec.Replicas {
-			return fmt.Errorf("PodClique %s UpdatedReplicas = %d, want %d", pclq.Name, pclq.Status.UpdatedReplicas, pclq.Spec.Replicas)
+		if pclq.Status.UpdatedReplicas != ptr.Deref(pclq.Spec.Replicas, 1) {
+			return fmt.Errorf("PodClique %s UpdatedReplicas = %d, want %d", pclq.Name, pclq.Status.UpdatedReplicas, ptr.Deref(pclq.Spec.Replicas, 1))
 		}
 		if len(pclq.Status.LastErrors) > 0 {
 			return fmt.Errorf("PodClique %s has %d LastErrors: %+v", pclq.Name, len(pclq.Status.LastErrors), pclq.Status.LastErrors)

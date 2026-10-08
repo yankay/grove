@@ -79,6 +79,7 @@ func podCliqueSetPredicate() predicate.Predicate {
 				return false
 			}
 			return hasSpecChanged(updateEvent) ||
+				componentutils.GangRecoveryAnnotationsChanged(updateEvent.ObjectOld.GetAnnotations(), updateEvent.ObjectNew.GetAnnotations()) ||
 				hasAnnotationChanged(updateEvent.ObjectOld.GetAnnotations(), updateEvent.ObjectNew.GetAnnotations(), constants.AnnotationReconcileTrigger)
 		},
 		GenericFunc: func(_ event.GenericEvent) bool { return true },

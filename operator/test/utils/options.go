@@ -21,6 +21,7 @@ import (
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 // ============================================================================
@@ -97,7 +98,7 @@ func WithPCLQAvailable() PCLQOption {
 				Reason: "ScheduledSuccessfully",
 			},
 		}
-		pclq.Status.ReadyReplicas = pclq.Spec.Replicas
+		pclq.Status.ReadyReplicas = ptr.Deref(pclq.Spec.Replicas, 1)
 	}
 }
 

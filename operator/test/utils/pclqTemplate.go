@@ -20,6 +20,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 )
 
 // PodCliqueTemplateSpecBuilder is a builder for creating PodCliqueTemplateSpec objects.
@@ -40,7 +41,7 @@ func NewBasicPodCliqueTemplateSpec(name string) *grovecorev1alpha1.PodCliqueTemp
 	return &grovecorev1alpha1.PodCliqueTemplateSpec{
 		Name: name,
 		Spec: grovecorev1alpha1.PodCliqueSpec{
-			Replicas: 1,
+			Replicas: ptr.To[int32](1),
 			RoleName: name + "-role",
 		},
 	}
@@ -57,7 +58,7 @@ func (b *PodCliqueTemplateSpecBuilder) Build() *grovecorev1alpha1.PodCliqueTempl
 
 // WithReplicas sets the number of replicas for the PodCliqueTemplateSpec.
 func (b *PodCliqueTemplateSpecBuilder) WithReplicas(replicas int32) *PodCliqueTemplateSpecBuilder {
-	b.pclqTemplateSpec.Spec.Replicas = replicas
+	b.pclqTemplateSpec.Spec.Replicas = ptr.To[int32](replicas)
 	return b
 }
 
@@ -191,7 +192,7 @@ func createDefaultPodCliqueTemplateSpec(name string) *grovecorev1alpha1.PodCliqu
 	return &grovecorev1alpha1.PodCliqueTemplateSpec{
 		Name: name,
 		Spec: grovecorev1alpha1.PodCliqueSpec{
-			Replicas: 1,
+			Replicas: ptr.To[int32](1),
 		},
 	}
 }

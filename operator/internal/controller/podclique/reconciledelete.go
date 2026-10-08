@@ -20,24 +20,26 @@ import (
 
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
+	ctrlconstants "github.com/ai-dynamo/grove/operator/internal/constants"
 	ctrlcommon "github.com/ai-dynamo/grove/operator/internal/controller/common"
 	"github.com/ai-dynamo/grove/operator/internal/controller/podclique/expectations"
 	ctrlutils "github.com/ai-dynamo/grove/operator/internal/controller/utils"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-// triggerDeletionFlow handles the deletion of a PodClique. Owned Pods (and any
-// PCLQ-scoped ResourceClaims) carry a controller owner reference back to this
-// PodClique, so removing the finalizer hands the cascade off to the Kubernetes
-// garbage collector. Local in-memory state (the expectations store) is the only
-// thing the controller still has to clean up itself.
+// triggerDeletionFlow keeps the owner chain observable until all owned Pods have
+// drained. Recovery must not mistake an absent PodClique for absent descendants.
+// ResourceClaims still use owner-reference garbage collection.
 func (r *Reconciler) triggerDeletionFlow(ctx context.Context, logger logr.Logger, pclq *grovecorev1alpha1.PodClique) ctrlcommon.ReconcileStepResult {
 	dLog := logger.WithValues("operation", "delete")
 	deleteStepFns := []ctrlcommon.ReconcileStepFn[grovecorev1alpha1.PodClique]{
 		r.clearPodCliqueExpectations,
+		r.drainOwnedPods,
 		r.removeFinalizer,
 	}
 	for _, fn := range deleteStepFns {
@@ -45,8 +47,40 @@ func (r *Reconciler) triggerDeletionFlow(ctx context.Context, logger logr.Logger
 			return stepResult
 		}
 	}
-	dLog.Info("PodClique finalizer removed; Kubernetes garbage collector will cascade-delete owned Pods")
+	dLog.Info("PodClique Pods drained and finalizer removed")
 	return ctrlcommon.DoNotRequeue()
+}
+
+func (r *Reconciler) drainOwnedPods(ctx context.Context, _ logr.Logger, pclq *grovecorev1alpha1.PodClique) ctrlcommon.ReconcileStepResult {
+	// Explicit orphan deletion leaves descendant ownership changes to the GC.
+	// It is outside the automatic-recovery drain contract.
+	if controllerutil.ContainsFinalizer(pclq, metav1.FinalizerOrphanDependents) {
+		return ctrlcommon.ContinueReconcile()
+	}
+	// Finalizer release is an absence check: bypass the cache and do not rely on
+	// mutable labels to find descendants.
+	pods := &corev1.PodList{}
+	if err := r.apiReader.List(ctx, pods, client.InNamespace(pclq.Namespace)); err != nil {
+		return ctrlcommon.ReconcileWithErrors("error listing deleting PodClique's Pods", err)
+	}
+	pending := false
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if !metav1.IsControlledBy(pod, pclq) {
+			continue
+		}
+		pending = true
+		if !pod.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := client.IgnoreNotFound(r.client.Delete(ctx, pod, client.Preconditions{UID: &pod.UID})); err != nil {
+			return ctrlcommon.ReconcileWithErrors(fmt.Sprintf("error deleting Pod %s", pod.Name), err)
+		}
+	}
+	if pending {
+		return ctrlcommon.ReconcileAfter(ctrlconstants.ComponentSyncRetryInterval, "waiting for owned Pods to drain")
+	}
+	return ctrlcommon.ContinueReconcile()
 }
 
 // clearPodCliqueExpectations drops the in-memory expectations entries for this

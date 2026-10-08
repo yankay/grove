@@ -284,7 +284,7 @@ func (r *Reconciler) computePCLQsStatus(pcs *grovecorev1alpha1.PodCliqueSet, exp
 		lo.EveryBy(nonTerminatedPCLQs, func(pclq grovecorev1alpha1.PodClique) bool {
 			// A PodClique intentionally scaled to zero contributes no pods, so it satisfies availability
 			// vacuously and must not hold the replica back.
-			return pclq.Spec.Replicas == 0 || pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable
+			return ptr.Deref(pclq.Spec.Replicas, 1) == 0 || pclq.Status.ReadyReplicas >= *pclq.Spec.MinAvailable
 		})
 
 	isUpdated = isAvailable && lo.EveryBy(nonTerminatedPCLQs, func(pclq grovecorev1alpha1.PodClique) bool {

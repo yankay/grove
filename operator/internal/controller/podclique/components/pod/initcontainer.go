@@ -24,12 +24,35 @@ import (
 	"github.com/ai-dynamo/grove/operator/internal/constants"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 	groveversion "github.com/ai-dynamo/grove/operator/internal/version"
 
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 )
+
+// resolveStartupDependencies uses current membership when creating a Pod. Retained
+// PodCliques may still describe predecessors that have since gone idle.
+func resolveStartupDependencies(ss *syncSnapshot, podGangName string) ([]string, error) {
+	if ss.pcs.Spec.Template.StartupType == nil {
+		return nil, fmt.Errorf("PodCliqueSet %s has no startup type", ss.pcs.Name)
+	}
+	template, templateIndex, ok := lo.FindIndexOf(ss.pcs.Spec.Template.Cliques, func(template *grovecorev1alpha1.PodCliqueTemplateSpec) bool {
+		return template.Name == ss.cliqueName
+	})
+	if !ok {
+		return nil, fmt.Errorf("PodClique template %q not found in PodCliqueSet %s", ss.cliqueName, ss.pcs.Name)
+	}
+	rnr := apicommon.ResourceNameReplica{Name: ss.pcs.Name, Replica: ss.pcsReplicaIndex}
+	active, err := componentutils.ActivePodCliqueNamesForPodGang(ss.pcs, ss.pgm, rnr, podGangName)
+	if err != nil {
+		return nil, err
+	}
+	return componentutils.StartupDependencies(ss.pcs, templateIndex, template.Spec.StartsAfter, active, func(name string) []string {
+		return componentutils.GenerateDependencyNamesForEntries(ss.pcs, ss.pcsReplicaIndex, name, ss.pgm.Spec.Entries)
+	}), nil
+}
 
 const (
 	// envVarInitContainerImage stores the environment variable which is read to find the image for the init-container.

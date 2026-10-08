@@ -134,6 +134,14 @@ rules:
   - watch
 {{- if include "grove.scheduler.hasProfile" (list . "kai-scheduler") }}
 - apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  resourceNames:
+  - podgroups.scheduling.run.ai
+  verbs:
+  - get
+- apiGroups:
   - kai.scheduler
   resources:
   - topologies

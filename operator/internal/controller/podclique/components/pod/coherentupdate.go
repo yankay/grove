@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"github.com/go-logr/logr"
+	"k8s.io/utils/ptr"
 )
 
 // markCoherentUpdateEndIfConverged marks the end of a standalone PodClique's coherent update once every
@@ -27,7 +28,7 @@ import (
 // PodCliqueSet orchestrator never observes the replica as complete. Readiness is not checked here because
 // the PodCliqueSet orchestrator gates replica completion on readiness separately.
 func (r _resource) markCoherentUpdateEndIfConverged(ctx context.Context, logger logr.Logger, ss *syncSnapshot) error {
-	if ss.pclq.Status.Replicas != ss.pclq.Spec.Replicas {
+	if ss.pclq.Status.Replicas != ptr.Deref(ss.pclq.Spec.Replicas, 1) {
 		return nil
 	}
 	if ss.pclq.Status.UpdatedReplicas != ss.pclq.Status.Replicas {

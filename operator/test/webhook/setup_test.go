@@ -50,20 +50,21 @@ func TestSetup(t *testing.T) {
 	operatorCfg := &configv1alpha1.OperatorConfiguration{
 		Scheduler: configv1alpha1.SchedulerConfiguration{
 			Profiles: []configv1alpha1.SchedulerProfile{
-				{Name: configv1alpha1.SchedulerNameKai},
+				{Name: configv1alpha1.SchedulerNameKube},
 				{Name: configv1alpha1.SchedulerNameLPX},
 			},
-			DefaultProfileName: string(configv1alpha1.SchedulerNameKai),
+			DefaultProfileName: string(configv1alpha1.SchedulerNameKube),
 		},
 	}
 	configv1alpha1.SetObjectDefaults_OperatorConfiguration(operatorCfg)
 
 	require.NoError(t, Setup(mgr, operatorCfg))
 	require.ElementsMatch(t, []string{
+		"/webhooks/default-podclique",
 		"/webhooks/default-podcliqueset",
 		"/webhooks/validate-clustertopology",
-		"/webhooks/validate-podcliqueset",
 		"/webhooks/validate-podclique",
+		"/webhooks/validate-podcliqueset",
 		"/webhooks/validate-podcliquescalinggroup",
 	}, registeredPaths(server.handlers))
 }
