@@ -110,6 +110,12 @@ config:
   scheduler:
     profiles:
       - name: default-scheduler
+        # Disabled by default. Enabling requires Kubernetes >= 1.37, GenericWorkload
+        # on kube-apiserver, kube-scheduler, and kube-controller-manager, plus
+        # CompositePodGroup and TopologyAwareWorkloadScheduling on kube-apiserver
+        # and kube-scheduler. Missing APIs fail operator startup without fallback.
+        # config:
+        #   gangScheduling: true
       - name: kai-scheduler
       # Uncomment optional scheduler profiles only when their dependencies are installed.
       # - name: volcano
@@ -209,6 +215,18 @@ webhooks:
     labels:
       app.kubernetes.io/component: operator-pcs-validating-webhook
       app.kubernetes.io/name: pcs-validating-webhook
+      app.kubernetes.io/part-of: grove
+    annotations: {}
+  podCliqueValidationWebhook:
+    labels:
+      app.kubernetes.io/component: operator-pclq-validating-webhook
+      app.kubernetes.io/name: pclq-validating-webhook
+      app.kubernetes.io/part-of: grove
+    annotations: {}
+  podCliqueScalingGroupValidationWebhook:
+    labels:
+      app.kubernetes.io/component: operator-pcsg-validating-webhook
+      app.kubernetes.io/name: pcsg-validating-webhook
       app.kubernetes.io/part-of: grove
     annotations: {}
   podCliqueSetDefaultingWebhook:

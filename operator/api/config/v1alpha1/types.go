@@ -109,7 +109,10 @@ type KaiSchedulerConfiguration struct {
 // KubeSchedulerConfig holds the configuration for the default scheduler.
 // Used when unmarshalling SchedulerProfile.Config for default-scheduler.
 type KubeSchedulerConfig struct {
-	// GangScheduling indicates if Gang scheduling capability is enabled.
+	// GangScheduling enables hierarchical gang scheduling with Kubernetes Workload APIs.
+	// It defaults to false. Enabling it requires Kubernetes >= 1.37 and the
+	// GenericWorkload, CompositePodGroup, and TopologyAwareWorkloadScheduling
+	// feature gates. Missing scheduling APIs fail operator startup without fallback.
 	// +optional
 	GangScheduling bool `json:"gangScheduling,omitempty"`
 }

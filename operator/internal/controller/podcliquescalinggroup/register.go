@@ -22,9 +22,10 @@ import (
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
-	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	pcsgexpectations "github.com/ai-dynamo/grove/operator/internal/controller/podcliquescalinggroup/expectations"
 	ctrlutils "github.com/ai-dynamo/grove/operator/internal/controller/utils"
 	"github.com/ai-dynamo/grove/operator/internal/utils"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 
 	"github.com/samber/lo"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -32,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	ctrllogger "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -62,7 +64,7 @@ func (r *Reconciler) RegisterWithManager(mgr manager.Manager) error {
 		).
 		Watches(&grovecorev1alpha1.PodClique{},
 			handler.EnqueueRequestsFromMapFunc(mapPCLQToPCSG()),
-			builder.WithPredicates(podCliquePredicate()),
+			builder.WithPredicates(r.podCliquePredicate()),
 		).
 		Watches(&grovecorev1alpha1.PodGangMap{},
 			handler.EnqueueRequestsFromMapFunc(mapPodGangMapToPCSGs()),
@@ -98,7 +100,7 @@ func mapPCSToPCSG() handler.MapFunc {
 			return nil
 		}
 		var pcsReplicaIndices []int32
-		if componentutils.IsAutoUpdateStrategy(pcs) &&
+		if componentutils.IsRollingUpdateStrategy(pcs) &&
 			len(pcs.Status.UpdateProgress.CurrentlyUpdating) > 0 {
 			// Rolling recreate needs to have a CurrentlyUpdating which is used to generate an event for the corresponding PCSG
 			pcsReplicaIndices = lo.RangeFrom(pcs.Status.UpdateProgress.CurrentlyUpdating[0].ReplicaIndex, 1)
@@ -159,7 +161,7 @@ func shouldEnqueueOnPCSUpdate(event event.UpdateEvent) bool {
 		}
 	}
 	// Enqueue while using OnDelete since there is no CurrentlyUpdating
-	if newPCS.Status.UpdateProgress != nil && !componentutils.IsAutoUpdateStrategy(newPCS) {
+	if newPCS.Status.UpdateProgress != nil && !componentutils.IsRollingUpdateStrategy(newPCS) {
 		return true
 	}
 	return false
@@ -181,15 +183,32 @@ func mapPCLQToPCSG() handler.MapFunc {
 }
 
 // podCliquePredicate filters PodClique events to only process those managed by PodCliqueScalingGroup
-func podCliquePredicate() predicate.Predicate {
+func (r *Reconciler) podCliquePredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(_ event.CreateEvent) bool { return false },
 		DeleteFunc: func(deleteEvent event.DeleteEvent) bool {
-			return ctrlutils.IsManagedPodClique(deleteEvent.Object, constants.KindPodCliqueScalingGroup)
+			if !ctrlutils.IsManagedPodClique(deleteEvent.Object, constants.KindPodCliqueScalingGroup) {
+				return false
+			}
+			r.observeMemberPodCliqueDeletion(deleteEvent.Object)
+			return true
 		},
 		UpdateFunc: func(updateEvent event.UpdateEvent) bool {
 			return ctrlutils.IsManagedPodClique(updateEvent.ObjectOld, constants.KindPodCliqueScalingGroup)
 		},
+		GenericFunc: func(_ event.TypedGenericEvent[client.Object]) bool { return false },
+	}
+}
+
+// observeMemberPodCliqueDeletion lowers the PodCliqueScalingGroup's delete expectation for a deleted
+// member PodClique so a disrupted replica stops counting as unavailable once its PodCliques are gone.
+func (r *Reconciler) observeMemberPodCliqueDeletion(obj client.Object) {
+	pclq, ok := obj.(*grovecorev1alpha1.PodClique)
+	if !ok {
+		return
+	}
+	if key, ok := pcsgexpectations.PCSGScopedExpectationsStoreKeyForMemberPodClique(pclq); ok {
+		r.expectationStore.ObserveDeletions(ctrllogger.Log.WithName(controllerName), key, pclq.GetUID())
 	}
 }
 

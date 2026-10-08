@@ -26,14 +26,16 @@ import (
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
-	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	pcsgexpectations "github.com/ai-dynamo/grove/operator/internal/controller/podcliquescalinggroup/expectations"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/resourceclaim"
 	"github.com/ai-dynamo/grove/operator/internal/utils"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
 	"github.com/go-logr/logr"
 	"github.com/samber/lo"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -44,21 +46,31 @@ type syncSnapshot struct {
 	pcsReplicaIndex                int
 	pgm                            *grovecorev1alpha1.PodGangMap
 	existingPCLQs                  []grovecorev1alpha1.PodClique
-	existingPCLQNameSet            componentutils.Set[string]
-	pcsgIndicesToTerminate         []string
-	pcsgIndicesToRequeue           []string
+	existingPCLQNameSet            sets.Set[string]
+	expectationsStoreKey           string
 	expectedPCLQFQNsPerPCSGReplica map[int][]string
 	expectedPCLQPodTemplateHashMap map[string]string
 }
 
 // prepareSyncContext creates and initializes the synchronization context with all necessary data for PCSG reconciliation
-func (r _resource) prepareSyncContext(ctx context.Context, logger logr.Logger, pcsg *grovecorev1alpha1.PodCliqueScalingGroup) (*syncSnapshot, error) {
+func (r _resource) prepareSyncContext(ctx context.Context, pcsg *grovecorev1alpha1.PodCliqueScalingGroup) (*syncSnapshot, error) {
 	var (
 		syncSnap = &syncSnapshot{
 			pcsg: pcsg,
 		}
 		err error
 	)
+
+	// The expectations store key is the same for the whole PodCliqueScalingGroup, so build it once here.
+	// Failing to build it means disrupted replicas cannot be recorded as unavailable, which would make
+	// MaxUnavailable accounting non-deterministic, so abort the reconcile.
+	syncSnap.expectationsStoreKey, err = pcsgexpectations.PCSGScopedExpectationsStoreKey(pcsg.ObjectMeta)
+	if err != nil {
+		return nil, groveerr.WrapError(err,
+			errCodeCreatePCSGExpectationsStoreKey,
+			component.OperationSync,
+			fmt.Sprintf("failed to build expectations store key for PodCliqueScalingGroup %v", client.ObjectKeyFromObject(pcsg)))
+	}
 
 	// get the PodCliqueSet
 	syncSnap.pcs, err = componentutils.GetPodCliqueSet(ctx, r.client, pcsg.ObjectMeta)
@@ -97,11 +109,6 @@ func (r _resource) prepareSyncContext(ctx context.Context, logger logr.Logger, p
 	}
 	syncSnap.existingPCLQNameSet = componentutils.PodCliqueNameSet(syncSnap.existingPCLQs)
 
-	// compute the PCSG indices that have their MinAvailableBreached condition set to true. Segregated these into two
-	// pcsgIndicesToTerminate will have the indices for which the TerminationDelay has expired.
-	// pcsgIndicesToRequeue will have the indices for which the TerminationDelay has not yet expired.
-	syncSnap.pcsgIndicesToTerminate, syncSnap.pcsgIndicesToRequeue = getMinAvailableBreachedPCSGIndices(logger, syncSnap.existingPCLQs, syncSnap.pcs.Spec.Template.TerminationDelay.Duration)
-
 	// pre-compute expected PodTemplateHash for each PCLQ
 	syncSnap.expectedPCLQPodTemplateHashMap = getExpectedPCLQPodTemplateHashMap(syncSnap.pcs, pcsg)
 
@@ -110,6 +117,11 @@ func (r _resource) prepareSyncContext(ctx context.Context, logger logr.Logger, p
 
 // runSyncFlow executes the main synchronization logic for PodCliqueScalingGroup including replica management and updates
 func (r _resource) runSyncFlow(ctx context.Context, logger logr.Logger, ss *syncSnapshot) error {
+	// Segment MinAvailable-breached replicas from the PodCliques observed at the start of this reconcile:
+	// those past TerminationDelay are gang-terminated, those still within it trigger a requeue. Computed
+	// here rather than stored on the snapshot since it is used only within this flow.
+	pcsgIndicesToTerminate, pcsgIndicesToRequeue := getMinAvailableBreachedPCSGIndices(logger, ss.existingPCLQs, ss.pcs.Spec.Template.TerminationDelay.Duration)
+
 	// Ensure PCSG-level ResourceClaims before creating any PodCliques
 	if err := r.ensurePCSGResourceClaims(ctx, ss); err != nil {
 		return err
@@ -120,46 +132,142 @@ func (r _resource) runSyncFlow(ctx context.Context, logger logr.Logger, ss *sync
 	if err := r.triggerDeletionOfExcessPCSGReplicas(ctx, logger, ss); err != nil {
 		return err
 	}
+	if err := r.syncPCSGPodIndexOffsets(ctx, ss); err != nil {
+		return err
+	}
 	// Create or update the expected PodCliques as per the PodCliqueScalingGroup configurations defined in the PodCliqueSet.
-	// For OnDelete update strategy, use createOrUpdatePCLQs which performs in-place updates.
-	// For RollingRecreate (default) update strategy, use createExpectedPCLQs which only creates missing PodCliques.
-	if !componentutils.IsAutoUpdateStrategy(ss.pcs) {
-		if err := r.createOrUpdatePCLQs(ctx, logger, ss); err != nil {
-			return err
-		}
-	} else {
-		if err := r.createExpectedPCLQs(ctx, logger, ss); err != nil {
-			return err
-		}
+	if err := r.reconcileExpectedPodCliques(ctx, logger, ss); err != nil {
+		return err
 	}
 
-	// Only if the rolling update is not in progress, check for a possibility of gang termination and execute it only if
-	// the pcsg.spec.minAvailable is not breached.
-	if !componentutils.IsPCSGUpdateInProgress(ss.pcsg) {
-		if err := r.processMinAvailableBreachedPCSGReplicas(ctx, logger, ss); err != nil {
-			if errors.Is(err, errPCCGMinAvailableBreached) {
-				logger.Info("Skipping further reconciliation as MinAvailable for the PCSG has been breached. This can potentially trigger PCS replica deletion.")
-				return nil
-			}
+	// While an update is in progress, drive it per the update strategy. Otherwise check for a possibility
+	// of gang termination and execute it only if the pcsg.spec.minAvailable is not breached.
+	if componentutils.IsPCSGUpdateInProgress(ss.pcsg) {
+		if err := r.reconcileInProgressUpdate(ctx, logger, ss); err != nil {
 			return err
 		}
-	} else {
-		if componentutils.IsAutoUpdateStrategy(ss.pcs) {
-			if err := r.processPendingUpdates(ctx, logger, ss); err != nil {
-				return err
-			}
+	} else if err := r.processMinAvailableBreachedPCSGReplicas(ctx, logger, ss, pcsgIndicesToTerminate, pcsgIndicesToRequeue); err != nil {
+		if errors.Is(err, errPCCGMinAvailableBreached) {
+			logger.Info("Skipping further reconciliation as MinAvailable for the PCSG has been breached. This can potentially trigger PCS replica deletion.")
+			return nil
 		}
+		return err
 	}
 
 	// If there are any PCSG replicas which have minAvailableBreached but the terminationDelay has not yet expired, then
 	// requeue the event after a fixed delay.
-	if len(ss.pcsgIndicesToRequeue) > 0 {
+	if len(pcsgIndicesToRequeue) > 0 {
 		return groveerr.New(groveerr.ErrCodeRequeueAfter,
 			component.OperationSync,
 			"Requeuing to re-process PCLQs that have breached MinAvailable but not crossed TerminationDelay",
 		)
 	}
 	return nil
+}
+
+// reconcileExpectedPodCliques materializes the PodCliqueScalingGroup's member PodCliques. OnDelete updates
+// existing PodCliques in place with createOrUpdatePCLQs. RollingRecreate and Coherent only create missing
+// PodCliques with createExpectedPCLQs, since their rolls replace whole replicas rather than mutate a
+// PodClique in place.
+func (r _resource) reconcileExpectedPodCliques(ctx context.Context, logger logr.Logger, ss *syncSnapshot) error {
+	if !componentutils.IsRollingUpdateStrategy(ss.pcs) {
+		return r.createOrUpdatePCLQs(ctx, logger, ss)
+	}
+	return r.createExpectedPCLQs(ctx, logger, ss)
+}
+
+// reconcileInProgressUpdate drives an in-progress update of the PodCliqueScalingGroup per the update
+// strategy. Under Coherent the PodGangMap orchestrates the roll and is the single authority for what moves
+// and when, so this reconciler is a pure executor that realizes the committed placement and marks the
+// update ended once every replica has converged. It never runs the hash driven processPendingUpdates
+// cadence, which would replace replicas on its own schedule disjoint from the PodGangMap. Under
+// RollingRecreate the reconciler paces its own hash driven replacement.
+func (r _resource) reconcileInProgressUpdate(ctx context.Context, logger logr.Logger, ss *syncSnapshot) error {
+	if componentutils.IsCoherentStrategy(ss.pcs) {
+		if err := r.reconcileReplicasToCommittedPodGangs(ctx, logger, ss); err != nil {
+			return err
+		}
+		return r.markCoherentUpdateEndIfConverged(ctx, logger, ss)
+	}
+	if componentutils.IsRollingUpdateStrategy(ss.pcs) {
+		return r.processPendingUpdates(ctx, logger, ss)
+	}
+	return nil
+}
+
+// syncPCSGPodIndexOffsets reconciles internal offsets on existing PodCliques without recreating them.
+func (r _resource) syncPCSGPodIndexOffsets(ctx context.Context, ss *syncSnapshot) error {
+	for i := range ss.existingPCLQs {
+		pclq := &ss.existingPCLQs[i]
+		pcsgReplicaIndexValue, ok := pclq.Labels[apicommon.LabelPodCliqueScalingGroupReplicaIndex]
+		if !ok {
+			return groveerr.New(
+				errCodeSyncPCSGPodIndexOffsets,
+				component.OperationSync,
+				fmt.Sprintf("PodClique %v is missing required label %q", client.ObjectKeyFromObject(pclq), apicommon.LabelPodCliqueScalingGroupReplicaIndex),
+			)
+		}
+		pcsgReplicaIndex, err := strconv.Atoi(pcsgReplicaIndexValue)
+		if err != nil {
+			return groveerr.WrapError(
+				err,
+				errCodeSyncPCSGPodIndexOffsets,
+				component.OperationSync,
+				fmt.Sprintf("PodClique %v has invalid %s value %q", client.ObjectKeyFromObject(pclq), apicommon.LabelPodCliqueScalingGroupReplicaIndex, pcsgReplicaIndexValue),
+			)
+		}
+		cliqueName, err := componentutils.GetPodCliqueNameFromPodCliqueFQN(pclq.ObjectMeta)
+		if err != nil {
+			return groveerr.WrapError(err, errCodeSyncPCSGPodIndexOffsets, component.OperationSync, "failed to get PodClique name")
+		}
+		offset, err := getPCSGPodIndexOffset(ss, pcsgReplicaIndex, cliqueName)
+		if err != nil {
+			return groveerr.WrapError(err, errCodeSyncPCSGPodIndexOffsets, component.OperationSync, "failed to compute PodCliqueScalingGroup pod index offset")
+		}
+		expectedValue := strconv.Itoa(offset)
+		if pclq.Annotations[constants.AnnotationPodCliqueScalingGroupPodIndexOffset] == expectedValue {
+			continue
+		}
+
+		pclqBeforePatch := pclq.DeepCopy()
+		if pclq.Annotations == nil {
+			pclq.Annotations = make(map[string]string)
+		}
+		pclq.Annotations[constants.AnnotationPodCliqueScalingGroupPodIndexOffset] = expectedValue
+		if err = r.client.Patch(ctx, pclq, client.MergeFrom(pclqBeforePatch)); err != nil {
+			return groveerr.WrapError(
+				err,
+				errCodeSyncPCSGPodIndexOffsets,
+				component.OperationSync,
+				fmt.Sprintf("failed to update PodCliqueScalingGroup pod index offset on PodClique %v", client.ObjectKeyFromObject(pclq)),
+			)
+		}
+	}
+	return nil
+}
+
+// getPCSGPodIndexOffset computes a member PodClique's offset from the current sizes in one PCSG replica.
+func getPCSGPodIndexOffset(ss *syncSnapshot, pcsgReplicaIndex int, cliqueName string) (int, error) {
+	offset := 0
+	for _, memberCliqueName := range ss.pcsg.Spec.CliqueNames {
+		if memberCliqueName == cliqueName {
+			return offset, nil
+		}
+
+		replicas := int32(0)
+		pclqName := apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{Name: ss.pcsg.Name, Replica: pcsgReplicaIndex}, memberCliqueName)
+		if existingPCLQ, ok := lo.Find(ss.existingPCLQs, func(pclq grovecorev1alpha1.PodClique) bool {
+			return pclq.Name == pclqName
+		}); ok {
+			replicas = existingPCLQ.Spec.Replicas
+		} else if template := componentutils.FindPodCliqueTemplateSpecByName(ss.pcs, memberCliqueName); template != nil {
+			replicas = template.Spec.Replicas
+		} else {
+			return 0, fmt.Errorf("PodClique template %q not found in PodCliqueSet %q", memberCliqueName, ss.pcs.Name)
+		}
+		offset += int(replicas)
+	}
+	return 0, fmt.Errorf("PodClique %q is not a member of PodCliqueScalingGroup %q", cliqueName, ss.pcsg.Name)
 }
 
 // triggerDeletionOfExcessPCSGReplicas removes PCSG replicas that exceed the desired replica count due to scale-down
@@ -172,7 +280,7 @@ func (r _resource) triggerDeletionOfExcessPCSGReplicas(ctx context.Context, logg
 		logger.Info("Found more PodCliques than expected, triggering deletion of excess PodCliques", "expected", int(ss.pcsg.Spec.Replicas), "existing", existingPCSGReplicas, "diff", diff)
 		reason := "Delete excess PodCliqueScalingGroup replicas"
 		replicaIndicesToDelete := computePCSGReplicasToDelete(existingPCSGReplicas, int(ss.pcsg.Spec.Replicas))
-		deletionTasks := r.createDeleteTasks(logger, ss.pcs, pcsgObjectKey.Name, replicaIndicesToDelete, reason)
+		deletionTasks := r.createDeleteTasks(logger, ss, replicaIndicesToDelete, reason)
 		if err := r.triggerDeletionOfPodCliques(ctx, logger, pcsgObjectKey, deletionTasks); err != nil {
 			return err
 		}
@@ -269,19 +377,19 @@ func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, 
 }
 
 // processMinAvailableBreachedPCSGReplicas handles gang termination of PCSG replicas that have breached minimum availability requirements
-func (r _resource) processMinAvailableBreachedPCSGReplicas(ctx context.Context, logger logr.Logger, ss *syncSnapshot) error {
+func (r _resource) processMinAvailableBreachedPCSGReplicas(ctx context.Context, logger logr.Logger, ss *syncSnapshot, pcsgIndicesToTerminate, pcsgIndicesToRequeue []string) error {
 	// If pcsg.spec.minAvailable is breached, then delegate the responsibility to the PodCliqueSet reconciler which after
 	// termination delay terminate the PodCliqueSet replica. No further processing is required to be done here.
-	minAvailableBreachedPCSGReplicas := len(ss.pcsgIndicesToTerminate) + len(ss.pcsgIndicesToRequeue)
+	minAvailableBreachedPCSGReplicas := len(pcsgIndicesToTerminate) + len(pcsgIndicesToRequeue)
 	if int(ss.pcsg.Spec.Replicas)-minAvailableBreachedPCSGReplicas < int(*ss.pcsg.Spec.MinAvailable) {
 		return errPCCGMinAvailableBreached
 	}
 	// If pcsg.spec.minAvailable is not breached but if there is one more PCSG replica for which there is at least one PCLQ that has
 	// its minAvailable breached for a duration > terminationDelay then gang terminate such PCSG replicas.
-	if len(ss.pcsgIndicesToTerminate) > 0 {
-		logger.Info("Identified PodCliqueScalingGroup indices for gang termination", "indices", ss.pcsgIndicesToTerminate)
-		reason := fmt.Sprintf("Delete PodCliques %v for PodCliqueScalingGroup %v which have breached MinAvailable longer than TerminationDelay: %s", ss.pcsgIndicesToTerminate, client.ObjectKeyFromObject(ss.pcsg), ss.pcs.Spec.Template.TerminationDelay.Duration)
-		pclqGangTerminationTasks := r.createDeleteTasks(logger, ss.pcs, ss.pcsg.Name, ss.pcsgIndicesToTerminate, reason)
+	if len(pcsgIndicesToTerminate) > 0 {
+		logger.Info("Identified PodCliqueScalingGroup indices for gang termination", "indices", pcsgIndicesToTerminate)
+		reason := fmt.Sprintf("Delete PodCliques %v for PodCliqueScalingGroup %v which have breached MinAvailable longer than TerminationDelay: %s", pcsgIndicesToTerminate, client.ObjectKeyFromObject(ss.pcsg), ss.pcs.Spec.Template.TerminationDelay.Duration)
+		pclqGangTerminationTasks := r.createDeleteTasks(logger, ss, pcsgIndicesToTerminate, reason)
 		if err := r.triggerDeletionOfPodCliques(ctx, logger, client.ObjectKeyFromObject(ss.pcsg), pclqGangTerminationTasks); err != nil {
 			return err
 		}

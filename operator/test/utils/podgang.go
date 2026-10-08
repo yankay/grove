@@ -18,6 +18,7 @@ import (
 	"time"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
+	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
 	"github.com/samber/lo"
@@ -104,6 +105,7 @@ func (b *PodGangBuilder) WithDeletionTimestamp() *PodGangBuilder {
 // UID (not just name) can be exercised.
 func (b *PodGangBuilder) WithOwnerReference(kind, name string, uid types.UID) *PodGangBuilder {
 	b.pg.OwnerReferences = append(b.pg.OwnerReferences, metav1.OwnerReference{
+		APIVersion: grovecorev1alpha1.SchemeGroupVersion.String(),
 		Kind:       kind,
 		Name:       name,
 		UID:        uid,
@@ -116,6 +118,13 @@ func (b *PodGangBuilder) WithOwnerReference(kind, name string, uid types.UID) *P
 func (b *PodGangBuilder) WithLastScheduled() *PodGangBuilder {
 	now := metav1.Now()
 	b.pg.Status.LastScheduled = &now
+	return b
+}
+
+// WithLastReady sets Status.LastReady to mark the PodGang as having been ready at least once.
+func (b *PodGangBuilder) WithLastReady() *PodGangBuilder {
+	now := metav1.Now()
+	b.pg.Status.LastReady = &now
 	return b
 }
 

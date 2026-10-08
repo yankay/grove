@@ -20,14 +20,16 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
-	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	"github.com/ai-dynamo/grove/operator/internal/controller/podclique/expectations"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/index"
 	"github.com/ai-dynamo/grove/operator/internal/utils"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
@@ -68,7 +70,7 @@ func (r _resource) prepareSyncFlow(ctx context.Context, logger logr.Logger, pclq
 		)
 	}
 
-	ss.cliqueName, err = utils.GetPodCliqueNameFromPodCliqueFQN(pclq.ObjectMeta)
+	ss.cliqueName, err = componentutils.GetPodCliqueNameFromPodCliqueFQN(pclq.ObjectMeta)
 	if err != nil {
 		return nil, groveerr.WrapError(err,
 			errCodeGetPodCliqueTemplate,
@@ -223,9 +225,18 @@ func (r _resource) runSyncFlow(ctx context.Context, logger logr.Logger, ss *sync
 		}
 	}
 
-	if componentutils.IsAutoUpdateStrategy(ss.pcs) && componentutils.IsPCLQAutoUpdateInProgress(ss.pclq) {
-		if err := r.processPendingUpdates(ctx, logger, ss); err != nil {
-			result.recordError(err)
+	if componentutils.IsPCLQRollingUpdateInProgress(ss.pclq) {
+		if componentutils.IsRollingRecreateUpdateInProgress(ss.pcs) {
+			// RollingRecreate self-paces the roll, deleting old-hash pods within the frozen PodGang.
+			if err := r.processPendingUpdates(ctx, logger, ss); err != nil {
+				result.recordError(err)
+			}
+		} else if ss.isStandalonePCLQ && componentutils.IsCoherentUpdateInProgress(ss.pcs) {
+			// Under Coherent the PodGangMap-driven distribution rolls the pods, so the pod component only
+			// marks the PodClique's update ended once every pod has reached the current revision.
+			if err := r.markCoherentUpdateEndIfConverged(ctx, logger, ss); err != nil {
+				result.recordError(err)
+			}
 		}
 	}
 
@@ -235,6 +246,58 @@ func (r _resource) runSyncFlow(ctx context.Context, logger logr.Logger, ss *sync
 	}
 	result.recordPendingScheduleGatedPods(skippedScheduleGatedPods)
 	return result
+}
+
+// syncPCSGPodIndexLabels backfills and reconciles the group-wide index label on existing PCSG pods.
+func (r _resource) syncPCSGPodIndexLabels(ctx context.Context, ss *syncSnapshot) error {
+	firstPCSGPodIndex, err := getPCSGPodIndex(ss.pclq, 0)
+	if err != nil {
+		return groveerr.WrapError(
+			err,
+			errCodeUpdatePCSGPodIndexLabel,
+			component.OperationSync,
+			fmt.Sprintf("error computing PodCliqueScalingGroup pod index for PodClique %v", client.ObjectKeyFromObject(ss.pclq)),
+		)
+	}
+	if firstPCSGPodIndex == nil {
+		return nil
+	}
+
+	for _, pod := range ss.existingPCLQPods {
+		podIndexValue, ok := pod.Labels[apicommon.LabelPodCliquePodIndex]
+		if !ok {
+			return groveerr.New(
+				errCodeUpdatePCSGPodIndexLabel,
+				component.OperationSync,
+				fmt.Sprintf("Pod %v is missing required label %q", client.ObjectKeyFromObject(pod), apicommon.LabelPodCliquePodIndex),
+			)
+		}
+		podIndex, err := strconv.Atoi(podIndexValue)
+		if err != nil {
+			return groveerr.WrapError(
+				err,
+				errCodeUpdatePCSGPodIndexLabel,
+				component.OperationSync,
+				fmt.Sprintf("Pod %v has invalid %s value %q", client.ObjectKeyFromObject(pod), apicommon.LabelPodCliquePodIndex, podIndexValue),
+			)
+		}
+		expectedValue := strconv.Itoa(*firstPCSGPodIndex + podIndex)
+		if pod.Labels[apicommon.LabelPodCliqueScalingGroupPodIndex] == expectedValue {
+			continue
+		}
+
+		podBeforePatch := pod.DeepCopy()
+		pod.Labels[apicommon.LabelPodCliqueScalingGroupPodIndex] = expectedValue
+		if err = r.client.Patch(ctx, pod, client.MergeFrom(podBeforePatch)); err != nil {
+			return groveerr.WrapError(
+				err,
+				errCodeUpdatePCSGPodIndexLabel,
+				component.OperationSync,
+				fmt.Sprintf("failed to update PodCliqueScalingGroup pod index label on Pod %v", client.ObjectKeyFromObject(pod)),
+			)
+		}
+	}
+	return nil
 }
 
 // computePodCountDelta returns desired minus the live pod count reconciled with expectations for a
@@ -519,7 +582,7 @@ func (r _resource) createPods(ctx context.Context, logger logr.Logger, ss *syncS
 	}
 	// A PodCliqueScalingGroup-owned PodClique belongs to a single PodGang, so every created pod
 	// records its create expectation under that PodGang's scoped key.
-	expectationsKey, err := componentutils.PodGangScopedExpectationsStoreKey(ss.pclq.ObjectMeta, ss.pcsgReplicaPodGangName)
+	expectationsKey, err := expectations.PodGangScopedExpectationsStoreKey(ss.pclq.ObjectMeta, ss.pcsgReplicaPodGangName)
 	if err != nil {
 		return 0, err
 	}

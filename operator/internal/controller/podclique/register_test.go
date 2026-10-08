@@ -19,7 +19,7 @@ import (
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
-	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
+	"github.com/ai-dynamo/grove/operator/internal/controller/podclique/expectations"
 	"github.com/ai-dynamo/grove/operator/internal/expect"
 	testutils "github.com/ai-dynamo/grove/operator/test/utils"
 
@@ -49,7 +49,7 @@ func TestPodPredicate_Delete(t *testing.T) {
 	const ns, pclqName, podName, podGangName = "default", "pclq-1", "pclq-1-0", "pclq-1-pg-0"
 	pclqObjMeta := metav1.ObjectMeta{Namespace: ns, Name: pclqName}
 	// The observer records and lowers expectations under the pod's PodGang-scoped key.
-	expectationsKey, err := componentutils.PodGangScopedExpectationsStoreKey(pclqObjMeta, podGangName)
+	expectationsKey, err := expectations.PodGangScopedExpectationsStoreKey(pclqObjMeta, podGangName)
 	require.NoError(t, err)
 
 	t.Run("managed pod with PodClique owner: ObserveDeletions removes UID from create expectations so pod can be recreated", func(t *testing.T) {
@@ -369,10 +369,9 @@ func TestPodGangMapPredicate(t *testing.T) {
 	pgmWith := func(entries ...grovecorev1alpha1.PodGangEntry) *grovecorev1alpha1.PodGangMap {
 		return testutils.NewPodGangMapBuilder(pcsName, ns, "pcs-uid", 0).WithEntries(entries...).Build()
 	}
-	anchor := func(epoch string, anchorIndex int32, podCliques map[string]int32) grovecorev1alpha1.PodGangEntry {
+	anchor := func(epoch string, podCliques map[string]int32) grovecorev1alpha1.PodGangEntry {
 		return testutils.NewPodGangEntryBuilder(hash, epoch).
 			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
-			WithAnchorIndex(anchorIndex).
 			WithPodCliques(podCliques).
 			Build()
 	}
@@ -387,44 +386,44 @@ func TestPodGangMapPredicate(t *testing.T) {
 		{
 			name:     "create always fires",
 			isCreate: true,
-			new:      pgmWith(anchor("100", 0, map[string]int32{"frontend": 6})),
+			new:      pgmWith(anchor("100", map[string]int32{"frontend": 6})),
 			want:     true,
 		},
 		{
 			name: "same-total redistribution across anchors fires",
-			old:  pgmWith(anchor("100", 0, map[string]int32{"frontend": 6})),
+			old:  pgmWith(anchor("100", map[string]int32{"frontend": 6})),
 			new: pgmWith(
-				anchor("100", 0, map[string]int32{"frontend": 3}),
-				anchor("200", 1, map[string]int32{"frontend": 3}),
+				anchor("100", map[string]int32{"frontend": 3}),
+				anchor("200", map[string]int32{"frontend": 3}),
 			),
 			want: true,
 		},
 		{
 			name: "count change on the same anchor fires",
-			old:  pgmWith(anchor("100", 0, map[string]int32{"frontend": 6})),
-			new:  pgmWith(anchor("100", 0, map[string]int32{"frontend": 5})),
+			old:  pgmWith(anchor("100", map[string]int32{"frontend": 6})),
+			new:  pgmWith(anchor("100", map[string]int32{"frontend": 5})),
 			want: true,
 		},
 		{
 			name: "a standalone PodClique moving entirely to a new epoch fires",
-			old:  pgmWith(anchor("100", 0, map[string]int32{"frontend": 3})),
-			new:  pgmWith(anchor("200", 0, map[string]int32{"frontend": 3})),
+			old:  pgmWith(anchor("100", map[string]int32{"frontend": 3})),
+			new:  pgmWith(anchor("200", map[string]int32{"frontend": 3})),
 			want: true,
 		},
 		{
 			name: "unchanged distribution does not fire",
-			old:  pgmWith(anchor("100", 0, map[string]int32{"frontend": 6})),
-			new:  pgmWith(anchor("100", 0, map[string]int32{"frontend": 6})),
+			old:  pgmWith(anchor("100", map[string]int32{"frontend": 6})),
+			new:  pgmWith(anchor("100", map[string]int32{"frontend": 6})),
 			want: false,
 		},
 		{
 			name: "only PodCliqueScalingGroup indices change does not fire",
 			old: pgmWith(testutils.NewPodGangEntryBuilder(hash, "100").
-				WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(0).
+				WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
 				WithPodCliques(map[string]int32{"frontend": 6}).
 				WithPCSGReplicaIndices(map[string][]int32{"sga": {0, 1, 2}}).Build()),
 			new: pgmWith(testutils.NewPodGangEntryBuilder(hash, "100").
-				WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(0).
+				WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
 				WithPodCliques(map[string]int32{"frontend": 6}).
 				WithPCSGReplicaIndices(map[string][]int32{"sga": {0, 1}}).Build()),
 			want: false,
@@ -452,10 +451,10 @@ func TestMapPodGangMapToPCLQs(t *testing.T) {
 
 	pgm := testutils.NewPodGangMapBuilder(pcsName, ns, "pcs-uid", 0).WithEntries(
 		testutils.NewPodGangEntryBuilder(hash, "100").
-			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(0).
+			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
 			WithPodCliques(map[string]int32{"frontend": 3, "backend": 2}).Build(),
 		testutils.NewPodGangEntryBuilder(hash, "200").
-			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).WithAnchorIndex(1).
+			WithRole(grovecorev1alpha1.PodGangEntryRoleAnchor).
 			WithPodCliques(map[string]int32{"frontend": 3}).Build(),
 	).Build()
 

@@ -26,9 +26,9 @@ import (
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
-	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler"
+	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
@@ -75,11 +75,10 @@ func New(client client.Client, scheme *runtime.Scheme, eventRecorder record.Even
 
 // GetExistingResourceNames returns the names of existing PodGang resources for the PodCliqueSet.
 func (r _resource) GetExistingResourceNames(ctx context.Context, logger logr.Logger, pcsObjMeta metav1.ObjectMeta) ([]string, error) {
-	logger.Info("Looking for existing PodGang resources created per replica of PodCliqueSet")
-	objMetaList := &metav1.PartialObjectMetadataList{}
-	objMetaList.SetGroupVersionKind(groveschedulerv1alpha1.SchemeGroupVersion.WithKind("PodGang"))
+	logger.V(1).Info("Looking for existing PodGang resources created per replica of PodCliqueSet")
+	podGangList := &groveschedulerv1alpha1.PodGangList{}
 	if err := r.client.List(ctx,
-		objMetaList,
+		podGangList,
 		client.InNamespace(pcsObjMeta.Namespace),
 		client.MatchingLabels(componentutils.GetPodGangSelectorLabels(pcsObjMeta)),
 	); err != nil {
@@ -89,13 +88,13 @@ func (r _resource) GetExistingResourceNames(ctx context.Context, logger logr.Log
 			fmt.Sprintf("Error listing PodGang for PodCliqueSet: %v", k8sutils.GetObjectKeyFromObjectMeta(pcsObjMeta)),
 		)
 	}
-	return k8sutils.FilterMapOwnedResourceNames(pcsObjMeta, objMetaList.Items), nil
+	return k8sutils.FilterMapOwnedResourceNames(pcsObjMeta, podGangList.Items), nil
 }
 
 // Sync creates, updates, or deletes PodGang resources to match the desired state.
 // NEW FLOW: PodGangs are created with empty podReferences before Pods are created.
 func (r _resource) Sync(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet) error {
-	logger.Info("Syncing PodGang resources")
+	logger.V(1).Info("Syncing PodGang resources")
 	sc, err := r.prepareSyncFlow(ctx, logger, pcs)
 	if err != nil {
 		return err

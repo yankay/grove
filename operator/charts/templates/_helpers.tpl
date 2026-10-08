@@ -39,7 +39,8 @@ config.yaml: |
     {{- range .Values.config.scheduler.profiles }}
     - name: {{ .name }}
       {{- if hasKey . "config" }}
-      config: {{ toYaml .config | nindent 4 }}
+      config:
+        {{- toYaml .config | nindent 8 }}
       {{- end }}
     {{- end }}
   {{- end }}
@@ -84,7 +85,7 @@ grove-operator-cm-{{ include "operator.config.data" . | sha256sum | trunc 8 }}
 {{- end -}}
 
 {{- define "common.chart.labels" -}}
-chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+chart: "{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimAll "-_." }}"
 release: "{{ .Release.Name }}"
 {{- end -}}
 
@@ -94,6 +95,13 @@ release: "{{ .Release.Name }}"
 {{- $profile := index . 1 -}}
 {{- range $root.Values.config.scheduler.profiles -}}
 {{- if eq .name $profile -}}true{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Returns "true" if the default-scheduler profile has gang scheduling enabled, empty string otherwise. */}}
+{{- define "grove.scheduler.kubeGangSchedulingEnabled" -}}
+{{- range .Values.config.scheduler.profiles -}}
+{{- if and (eq .name "default-scheduler") .config .config.gangScheduling -}}true{{- end -}}
 {{- end -}}
 {{- end -}}
 
@@ -165,6 +173,20 @@ release: "{{ .Release.Name }}"
 {{- define "operator.pcs.validating.webhook.labels" -}}
 {{- include "common.chart.labels" . }}
 {{- range $key, $val := .Values.webhooks.podCliqueSetValidationWebhook.labels }}
+{{ $key }}: {{ $val }}
+{{- end }}
+{{- end -}}
+
+{{- define "operator.pclq.validating.webhook.labels" -}}
+{{- include "common.chart.labels" . }}
+{{- range $key, $val := .Values.webhooks.podCliqueValidationWebhook.labels }}
+{{ $key }}: {{ $val }}
+{{- end }}
+{{- end -}}
+
+{{- define "operator.pcsg.validating.webhook.labels" -}}
+{{- include "common.chart.labels" . }}
+{{- range $key, $val := .Values.webhooks.podCliqueScalingGroupValidationWebhook.labels }}
 {{ $key }}: {{ $val }}
 {{- end }}
 {{- end -}}
